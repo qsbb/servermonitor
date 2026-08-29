@@ -1,0 +1,10 @@
+admins: []
+servers: []
+page_size: 8
+offline_timeout: 30
+alert:
+  enabled: true
+  cooldown: 120
+render:
+  imgType: png
+show_ip_in_image: false

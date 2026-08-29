@@ -1,0 +1,120 @@
+#container {
+  width: 960px;
+  box-sizing: border-box;
+  padding: 24px;
+  color: #e8ecf4;
+  background: radial-gradient(circle at top, #1b2030 0%, #0f1320 100%);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.sm-topbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.sm-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.sm-summary {
+  font-size: 14px;
+  color: #aab4cf;
+}
+
+.sm-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.sm-card {
+  width: 452px;
+  box-sizing: border-box;
+  border-radius: 16px;
+  background: rgba(33, 38, 55, 0.92);
+  border: 2px solid #3d4661;
+  padding: 16px 16px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.sm-card.offline {
+  opacity: 0.8;
+}
+
+.sm-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.sm-name {
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sm-badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.sm-sub {
+  font-size: 12px;
+  color: #9aa3bd;
+  line-height: 1.5;
+}
+
+.sm-section {
+  margin-top: 10px;
+}
+
+.sm-label {
+  font-size: 14px;
+  margin-bottom: 4px;
+  color: #dfe6f7;
+}
+
+.sm-text {
+  font-size: 13px;
+  color: #c5cee3;
+  line-height: 1.5;
+}
+
+.sm-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #30384e;
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+
+.sm-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.sm-metrics {
+  display: grid;
+  gap: 10px;
+}
+
+.sm-footer {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 12px;
+  color: #7e87a4;
+}
+
+.sm-muted {
+  color: #8c96b6;
+}

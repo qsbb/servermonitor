@@ -1,0 +1,17 @@
+{
+  "name": "servermonitor-agent",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "servermonitor agent for host metric reporting",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node agent.mjs",
+    "dry-run": "node agent.mjs --dry-run"
+  },
+  "dependencies": {
+    "systeminformation": "^5.24.0"
+  }
+}

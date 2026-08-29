@@ -1,0 +1,71 @@
+<link rel="stylesheet" href="{{pluResPath}}status.css">
+<div id="container">
+  <div class="sm-topbar">
+    <div class="sm-title">{{if detail}}📋 服务器状态详情{{else}}📊 服务器状态总览{{/if}}</div>
+    <div class="sm-summary">{{summary}}</div>
+  </div>
+
+  <div class="sm-grid">
+    {{each servers s}}
+    <div class="sm-card {{s.state !== 'online' ? 'offline' : ''}}" style="border-color: {{s.borderColor}};">
+      <div class="sm-head">
+        <div class="sm-name">
+          <span>{{s.name}}</span>
+          <span class="sm-badge" style="background: {{s.stateColor}}22; color: {{s.stateColor}}; border: 1px solid {{s.stateColor}}55;">
+            {{s.stateText}}
+          </span>
+        </div>
+        <div class="sm-sub">
+          {{if s.noteText}}备注：{{s.noteText}} · {{/if}}
+          {{s.osText}} · 运行 {{s.uptimeText}} · 数据 {{s.dataAgeText}} · 最近上报 {{s.lastSeenText}}
+        </div>
+      </div>
+
+      <div class="sm-metrics">
+        <div class="sm-section">
+          <div class="sm-label">CPU：{{s.cpuModel}}</div>
+          <div class="sm-bar"><i style="width: {{s.cpuPct}}%; background: {{s.cpuColor}};"></i></div>
+          <div class="sm-text">{{s.cpuText}}</div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-label">GPU</div>
+          {{if s.hasGpu}}
+            {{each s.gpus g}}
+            <div style="margin-top: 6px;">
+              <div class="sm-label" style="font-size: 13px; font-weight: 600;">{{g.model}}</div>
+              <div class="sm-bar"><i style="width: {{g.pct}}%; background: {{g.color}};"></i></div>
+              <div class="sm-text">{{g.text}}</div>
+            </div>
+            {{/each}}
+          {{else}}
+            <div class="sm-text sm-muted">{{s.gpuEmptyText}}</div>
+          {{/if}}
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-label">内存</div>
+          <div class="sm-text">{{s.memText}}</div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-label">磁盘</div>
+          <div class="sm-text">{{s.diskText}}</div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-label">网速</div>
+          <div class="sm-text">{{s.netText}}</div>
+        </div>
+
+        <div class="sm-section">
+          <div class="sm-label">负载 / 功耗</div>
+          <div class="sm-text">负载 {{s.loadText}} · 功耗 {{s.powerText}}</div>
+        </div>
+      </div>
+    </div>
+    {{/each}}
+  </div>
+
+  <div class="sm-footer">第 {{pageNum}} / {{pageCount}} 页 · 更新于 {{updateTime}}</div>
+</div>
