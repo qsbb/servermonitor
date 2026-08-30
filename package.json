@@ -1,6 +1,6 @@
 {
   "name": "servermonitor-yunzai-plugin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "private": true,
   "description": "TRSS-Yunzai multi-server status monitor plugin",

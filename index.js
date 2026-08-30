@@ -1,6 +1,6 @@
 import plugin from "../../lib/plugins/plugin.js"
 import cfg from "../../lib/config/config.js"
-import { loadConfig } from "./config.js"
+import { CONFIG_FILE, DATA_DIR, getReportUrlPath, loadConfig } from "./config.js"
 import {
   getEntries,
   getEntryByName,
@@ -39,6 +39,7 @@ export class servermonitor extends plugin {
         { name: "servermonitor快照落盘", fnc: "persist", cron: "*/30 * * * * *", log: false },
       ],
       rule: [
+        { reg: "^#?(服务器状态检查|servermonitor检查)$", fnc: "check", log: false },
         { reg: "^#?服务器状态帮助$", fnc: "help", log: false },
         { reg: "^#?服务器状态列表$", fnc: "list", log: false },
         { reg: "^#?服务器状态添加\\s+(\\S{1,32})(?:\\s+(.+))?$", fnc: "add", permission: "master", log: false },
@@ -144,8 +145,30 @@ export class servermonitor extends plugin {
       `#服务器状态            查看全部服务器`,
       `#服务器状态 <名称>     查看单台服务器`,
       `#服务器状态列表        列出已注册服务器`,
+      `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态添加 <名称>  主人私聊添加服务器`,
       `#服务器状态删除 <名称>  主人删除服务器`,
+    ].join("\n"))
+  }
+
+  async check() {
+    const routeReady = initServerMonitorRoutes()
+    const config = await loadConfig()
+    const entries = await getEntries().catch(() => [])
+    const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536").replace(/\/+$/, "")
+    const reportUrl = `${baseUrl}${getReportUrlPath()}`
+    return this.reply([
+      `【${PLUGIN_NAME}】自检`,
+      `插件加载：正常`,
+      `HTTP接口：${routeReady ? "已注册" : "等待 Bot.express"}`,
+      `上报地址：${reportUrl}`,
+      `配置文件：${CONFIG_FILE}`,
+      `数据目录：${DATA_DIR}`,
+      `注册服务器：${config.servers?.length || 0} 台`,
+      `当前展示：${entries.map(i => i.name).join("、") || "空"}`,
+      `public_status：${config.public_status ? "true" : "false"}`,
+      `include_local：${config.include_local ? "true" : "false"}`,
+      `runtime.render：${this.e?.runtime?.render ? "可用" : "未检测到"}`,
     ].join("\n"))
   }
 

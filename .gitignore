@@ -1,11 +1,11 @@
 # dependencies
 node_modules/
-servermonitor/agent/node_modules/
+agent/node_modules/
 
 # runtime data and secrets
-servermonitor/config.yaml
-servermonitor/data/*
-!servermonitor/data/.gitkeep
+config.yaml
+data/*
+!data/.gitkeep
 
 # logs and OS files
 *.log
