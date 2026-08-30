@@ -1,4 +1,5 @@
-FROM node:18-bookworm-slim
+ARG NODE_IMAGE=node:18-bookworm-slim
+FROM ${NODE_IMAGE}
 
 WORKDIR /app
 RUN apt-get update \

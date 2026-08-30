@@ -17,6 +17,80 @@ fi
 SM_INTERVAL="${SM_INTERVAL:-10}"
 SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-30}"
 SM_TIMEOUT="${SM_TIMEOUT:-5000}"
+AUTO_NODE_IMAGE="${AUTO_NODE_IMAGE:-1}"
+NODE_IMAGE_PROBE_TIMEOUT="${NODE_IMAGE_PROBE_TIMEOUT:-8}"
+NODE_IMAGE_PRE_PULL="${NODE_IMAGE_PRE_PULL:-1}"
+DEFAULT_NODE_IMAGE="node:18-bookworm-slim"
+NODE_IMAGE_CANDIDATES="${NODE_IMAGE_CANDIDATES:-node:18-bookworm-slim,docker.1ms.run/library/node:18-bookworm-slim,docker.m.daocloud.io/library/node:18-bookworm-slim,hub.rat.dev/library/node:18-bookworm-slim}"
+NODE_IMAGE="${NODE_IMAGE:-}"
+
+now_ms() {
+  local ts
+  ts="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$ts" =~ ^[0-9]+$ ]]; then
+    echo "$ts"
+  else
+    echo "$(( $(date +%s) * 1000 ))"
+  fi
+}
+
+probe_node_image() {
+  local image="$1"
+  local start end
+  if docker image inspect "$image" >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+  start="$(now_ms)"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${NODE_IMAGE_PROBE_TIMEOUT}s" docker manifest inspect "$image" >/dev/null 2>&1 || return 1
+  else
+    docker manifest inspect "$image" >/dev/null 2>&1 || return 1
+  fi
+  end="$(now_ms)"
+  echo "$(( end - start ))"
+}
+
+select_node_image() {
+  if [[ -n "$NODE_IMAGE" ]]; then
+    echo "[servermonitor-agent] using configured NODE_IMAGE=$NODE_IMAGE"
+    return 0
+  fi
+  if [[ "$AUTO_NODE_IMAGE" == "0" || "$AUTO_NODE_IMAGE" == "false" ]]; then
+    NODE_IMAGE="$DEFAULT_NODE_IMAGE"
+    echo "[servermonitor-agent] auto mirror disabled, using NODE_IMAGE=$NODE_IMAGE"
+    return 0
+  fi
+
+  local old_ifs candidate ms best best_ms
+  best=""
+  best_ms=999999999
+  old_ifs="$IFS"
+  IFS=','
+  for candidate in $NODE_IMAGE_CANDIDATES; do
+    candidate="${candidate//[$'\t\r\n ']/}"
+    [[ -z "$candidate" ]] && continue
+    echo "[servermonitor-agent] testing node image mirror: $candidate"
+    if ms="$(probe_node_image "$candidate")"; then
+      echo "[servermonitor-agent] mirror ok: $candidate (${ms}ms)"
+      if (( ms < best_ms )); then
+        best="$candidate"
+        best_ms="$ms"
+      fi
+    else
+      echo "[servermonitor-agent] mirror failed/timeout: $candidate"
+    fi
+  done
+  IFS="$old_ifs"
+
+  if [[ -n "$best" ]]; then
+    NODE_IMAGE="$best"
+  else
+    NODE_IMAGE="$DEFAULT_NODE_IMAGE"
+    echo "[servermonitor-agent] all mirror probes failed, fallback NODE_IMAGE=$NODE_IMAGE"
+  fi
+  echo "[servermonitor-agent] selected NODE_IMAGE=$NODE_IMAGE"
+}
 
 if [[ -z "$SM_NAME" || -z "$SM_REPORT_URL" ]]; then
   cat <<'EOF'
@@ -27,6 +101,11 @@ usage:
 example:
   sudo bash install-agent-docker.sh web-01 http://192.168.1.10:2536/servermonitor/report
   sudo bash install-agent-docker.sh web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+
+docker image mirror env:
+  AUTO_NODE_IMAGE=1
+  NODE_IMAGE=node:18-bookworm-slim
+  NODE_IMAGE_CANDIDATES=node:18-bookworm-slim,docker.1ms.run/library/node:18-bookworm-slim
 EOF
   exit 1
 fi
@@ -54,6 +133,8 @@ rm -rf "$INSTALL_DIR"
 mkdir -p "$(dirname "$INSTALL_DIR")"
 cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
 
+select_node_image
+
 cat >"$INSTALL_DIR/.env" <<EOF
 SM_NAME=${SM_NAME}
 SM_TOKEN=${SM_TOKEN}
@@ -61,9 +142,14 @@ SM_REPORT_URL=${SM_REPORT_URL}
 SM_INTERVAL=${SM_INTERVAL}
 SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}
 SM_TIMEOUT=${SM_TIMEOUT}
+NODE_IMAGE=${NODE_IMAGE}
 EOF
 
 cd "$INSTALL_DIR"
+if [[ "$NODE_IMAGE_PRE_PULL" != "0" && "$NODE_IMAGE_PRE_PULL" != "false" ]]; then
+  echo "[servermonitor-agent] pre-pulling selected node image: $NODE_IMAGE"
+  docker pull "$NODE_IMAGE" || echo "[servermonitor-agent] pre-pull failed, continue with docker compose build"
+fi
 docker compose --env-file .env -f docker-compose.agent.yml up -d --build
 
 echo "[servermonitor-agent] docker deployment installed to $INSTALL_DIR"

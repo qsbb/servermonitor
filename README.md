@@ -168,6 +168,19 @@ Windows 可运行：
 | Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
 
+Docker 版安装器会自动测速多个 Node 基础镜像地址，选择最快的 `NODE_IMAGE` 写入 `.env` 后再构建。可用环境变量覆盖：
+
+```bash
+NODE_IMAGE=registry.example.com/library/node:18-bookworm-slim \
+  sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report
+```
+
+也可关闭测速：
+
+```bash
+AUTO_NODE_IMAGE=0 sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report
+```
+
 ## 端口说明
 
 `2536` 通常是 TRSS-Yunzai 的 HTTP 服务端口。`servermonitor` 不会额外监听新端口，只是在同一个 `Bot.express` 上新增：

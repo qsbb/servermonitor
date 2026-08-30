@@ -2,6 +2,8 @@ services:
   servermonitor-agent:
     build:
       context: ./agent
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:18-bookworm-slim}
     image: servermonitor-agent:latest
     container_name: servermonitor-agent
     restart: unless-stopped

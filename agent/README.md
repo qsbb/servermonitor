@@ -110,6 +110,14 @@ cp .env.agent.example .env
 docker compose --env-file .env -f docker-compose.agent.yml up -d --build
 ```
 
+Dockerfile 支持通过 `.env` 指定基础镜像：
+
+```dotenv
+NODE_IMAGE=node:18-bookworm-slim
+```
+
+一键 Docker 安装脚本会自动测速候选镜像并写入最快的 `NODE_IMAGE`。
+
 查看日志：
 
 ```bash
