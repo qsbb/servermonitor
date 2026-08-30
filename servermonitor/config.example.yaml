@@ -2,6 +2,8 @@ admins: []
 servers: []
 page_size: 8
 offline_timeout: 30
+public_status: true
+include_local: true
 alert:
   enabled: true
   cooldown: 120

@@ -6,7 +6,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.0"
+const AGENT_VERSION = "0.1.1"
 
 function parseArgs(argv = []) {
   const out = {}
@@ -29,6 +29,7 @@ function help() {
 }
 
 function num(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
 }
@@ -55,6 +56,7 @@ function gibFromMiB(value, digits = 1) {
 }
 
 function clipPercent(value) {
+  if (value === null || value === undefined || value === "") return null
   const n = Number(value)
   if (!Number.isFinite(n)) return null
   return Math.max(0, Math.min(100, +n.toFixed(1)))

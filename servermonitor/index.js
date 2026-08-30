@@ -56,13 +56,20 @@ export class servermonitor extends plugin {
     return (config.admins || []).map(String).includes(String(this.e.user_id))
   }
 
+  async _canViewStatus() {
+    const config = await loadConfig()
+    if (config.public_status) return true
+    if (this.e.isMaster) return true
+    return (config.admins || []).map(String).includes(String(this.e.user_id))
+  }
+
   async _replyNoPermission() {
     if (this.e.isGroup) return false
     return this.reply("权限不足：仅管理员可用")
   }
 
   async statusAll() {
-    if (!(await this._isAdmin())) return this._replyNoPermission()
+    if (!(await this._canViewStatus())) return this._replyNoPermission()
     const config = await loadConfig()
     const entries = sortEntries(await getEntries())
     if (!entries.length) return this.reply("尚未添加服务器，请先执行 #服务器状态添加 <名称>")
@@ -72,14 +79,20 @@ export class servermonitor extends plugin {
     for (let i = 0; i < entries.length; i += pageSize) pages.push(entries.slice(i, i + pageSize))
 
     const segs = []
-    for (const [idx, pageEntries] of pages.entries()) {
-      const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries)
-      const seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", data, {
-        retType: "base64",
-        imgType: config.render?.imgType || "png",
-        saveId: `status_${Date.now()}_${idx}`,
-      })
-      if (seg) segs.push(seg)
+    try {
+      if (this.e?.runtime?.render) {
+        for (const [idx, pageEntries] of pages.entries()) {
+          const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries)
+          const seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", data, {
+            retType: "base64",
+            imgType: config.render?.imgType || "png",
+            saveId: `status_${Date.now()}_${idx}`,
+          })
+          if (seg) segs.push(seg)
+        }
+      }
+    } catch (err) {
+      ;(globalThis.logger || console).warn("[servermonitor] render status failed", err)
     }
 
     if (!segs.length) return this.reply(await buildTextFallback(entries))
@@ -87,7 +100,7 @@ export class servermonitor extends plugin {
   }
 
   async statusOne() {
-    if (!(await this._isAdmin())) return this._replyNoPermission()
+    if (!(await this._canViewStatus())) return this._replyNoPermission()
     const text = getMessageText(this.e)
     const args = parseCommandArg(text, /^#?服务器状态\s+(.+)$/)
     const name = args?.[0]?.trim()
@@ -97,24 +110,31 @@ export class servermonitor extends plugin {
     if (!entry) return this.reply(`未找到服务器：${name}`)
 
     const config = await loadConfig()
-    const seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", {
-      summary: `服务器【${entry.name}】详情`,
-      servers: [entry],
-      pageNum: 1,
-      pageCount: 1,
-      detail: true,
-      updateTime: new Date().toLocaleString(),
-    }, {
-      retType: "base64",
-      imgType: config.render?.imgType || "png",
-      saveId: `detail_${Date.now()}`,
-    })
+    let seg = null
+    try {
+      if (this.e?.runtime?.render) {
+        seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", {
+          summary: `服务器【${entry.name}】详情`,
+          servers: [entry],
+          pageNum: 1,
+          pageCount: 1,
+          detail: true,
+          updateTime: new Date().toLocaleString(),
+        }, {
+          retType: "base64",
+          imgType: config.render?.imgType || "png",
+          saveId: `detail_${Date.now()}`,
+        })
+      }
+    } catch (err) {
+      ;(globalThis.logger || console).warn("[servermonitor] render detail failed", err)
+    }
     if (!seg) return this.reply(await buildTextFallback([entry]))
     return this.reply(seg)
   }
 
   async list() {
-    if (!(await this._isAdmin())) return this._replyNoPermission()
+    if (!(await this._canViewStatus())) return this._replyNoPermission()
     return this.reply(await listServersText())
   }
 

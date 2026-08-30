@@ -2,7 +2,6 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import crypto from "node:crypto"
 import { fileURLToPath } from "node:url"
-import YAML from "yaml"
 
 export const PLUGIN_NAME = "servermonitor"
 export const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -15,6 +14,8 @@ const DEFAULT_CONFIG = {
   servers: [],
   page_size: 8,
   offline_timeout: 30,
+  public_status: true,
+  include_local: true,
   alert: {
     enabled: true,
     cooldown: 120,
@@ -49,6 +50,155 @@ function toBool(value, fallback = false) {
   return fallback
 }
 
+function yamlString(value) {
+  return JSON.stringify(String(value ?? ""))
+}
+
+function parseScalar(value) {
+  const s = String(value ?? "").trim()
+  if (!s) return ""
+  if (s.startsWith("[") && s.endsWith("]")) {
+    try {
+      return JSON.parse(s)
+    } catch {
+      const inner = s.slice(1, -1).trim()
+      return inner ? inner.split(",").map(i => parseScalar(i.trim())) : []
+    }
+  }
+  if (["true", "false"].includes(s.toLowerCase())) return s.toLowerCase() === "true"
+  if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s)
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    if (s.startsWith('"')) {
+      try { return JSON.parse(s) } catch { return s.slice(1, -1) }
+    }
+    return s.slice(1, -1).replace(/''/g, "'")
+  }
+  return s
+}
+
+function parseKeyValue(text) {
+  const idx = text.indexOf(":")
+  if (idx < 0) return null
+  const key = text.slice(0, idx).trim()
+  const value = text.slice(idx + 1).trim()
+  if (!key) return null
+  return [key, parseScalar(value)]
+}
+
+function parseConfigText(raw) {
+  const parsed = {}
+  let section = null
+  let currentServer = null
+
+  for (const sourceLine of String(raw || "").split(/\r?\n/)) {
+    if (!sourceLine.trim() || sourceLine.trim().startsWith("#")) continue
+    const indent = sourceLine.match(/^\s*/)?.[0]?.length || 0
+    const line = sourceLine.trim()
+
+    if (indent === 0) {
+      currentServer = null
+      if (/^admins:\s*\[\]\s*$/.test(line)) {
+        parsed.admins = []
+        section = null
+        continue
+      }
+      if (/^servers:\s*\[\]\s*$/.test(line)) {
+        parsed.servers = []
+        section = null
+        continue
+      }
+      if (line === "admins:") {
+        parsed.admins = []
+        section = "admins"
+        continue
+      }
+      if (line === "servers:") {
+        parsed.servers = []
+        section = "servers"
+        continue
+      }
+      if (line === "alert:") {
+        parsed.alert = parsed.alert || {}
+        section = "alert"
+        continue
+      }
+      if (line === "render:") {
+        parsed.render = parsed.render || {}
+        section = "render"
+        continue
+      }
+      const pair = parseKeyValue(line)
+      if (pair) parsed[pair[0]] = pair[1]
+      section = null
+      continue
+    }
+
+    if (section === "admins") {
+      if (line.startsWith("- ")) parsed.admins.push(String(parseScalar(line.slice(2))))
+      continue
+    }
+
+    if (section === "servers") {
+      if (!Array.isArray(parsed.servers)) parsed.servers = []
+      if (line.startsWith("- ")) {
+        currentServer = {}
+        parsed.servers.push(currentServer)
+        const rest = line.slice(2).trim()
+        const pair = rest ? parseKeyValue(rest) : null
+        if (pair) currentServer[pair[0]] = pair[1]
+        continue
+      }
+      if (currentServer) {
+        const pair = parseKeyValue(line)
+        if (pair) currentServer[pair[0]] = pair[1]
+      }
+      continue
+    }
+
+    if (section === "alert" || section === "render") {
+      const pair = parseKeyValue(line)
+      if (pair) parsed[section][pair[0]] = pair[1]
+    }
+  }
+
+  return parsed
+}
+
+function stringifyConfig(config) {
+  const data = normalizeConfig(config)
+  const lines = []
+  if (data.admins.length) {
+    lines.push("admins:")
+    for (const id of data.admins) lines.push(`  - ${yamlString(id)}`)
+  } else {
+    lines.push("admins: []")
+  }
+
+  if (data.servers.length) {
+    lines.push("servers:")
+    for (const server of data.servers) {
+      lines.push(`  - name: ${yamlString(server.name)}`)
+      lines.push(`    token: ${yamlString(server.token)}`)
+      lines.push(`    note: ${yamlString(server.note || "")}`)
+      lines.push(`    createdAt: ${Number(server.createdAt) || Date.now()}`)
+    }
+  } else {
+    lines.push("servers: []")
+  }
+
+  lines.push(`page_size: ${data.page_size}`)
+  lines.push(`offline_timeout: ${data.offline_timeout}`)
+  lines.push(`public_status: ${data.public_status}`)
+  lines.push(`include_local: ${data.include_local}`)
+  lines.push("alert:")
+  lines.push(`  enabled: ${data.alert.enabled}`)
+  lines.push(`  cooldown: ${data.alert.cooldown}`)
+  lines.push("render:")
+  lines.push(`  imgType: ${yamlString(data.render.imgType)}`)
+  lines.push(`show_ip_in_image: ${data.show_ip_in_image}`)
+  return `${lines.join("\n")}\n`
+}
+
 function normalizeServer(item) {
   if (!item || typeof item !== "object") return null
   const name = String(item.name ?? "").trim()
@@ -80,6 +230,8 @@ export function normalizeConfig(input = {}) {
 
   base.page_size = Math.max(1, toInt(config.page_size, base.page_size))
   base.offline_timeout = Math.max(5, toInt(config.offline_timeout, base.offline_timeout))
+  base.public_status = toBool(config.public_status, base.public_status)
+  base.include_local = toBool(config.include_local, base.include_local)
 
   const alert = config.alert && typeof config.alert === "object" ? config.alert : {}
   base.alert = {
@@ -103,7 +255,7 @@ async function ensureStorage() {
   try {
     await fs.access(CONFIG_FILE)
   } catch {
-    await fs.writeFile(CONFIG_FILE, YAML.stringify(DEFAULT_CONFIG), "utf8")
+    await fs.writeFile(CONFIG_FILE, stringifyConfig(DEFAULT_CONFIG), "utf8")
   }
 }
 
@@ -114,7 +266,7 @@ export async function loadConfig(force = false) {
     return clone(cache.data)
   }
   const raw = await fs.readFile(CONFIG_FILE, "utf8")
-  const parsed = YAML.parse(raw) ?? {}
+  const parsed = parseConfigText(raw)
   const data = normalizeConfig(parsed)
   cache.loaded = true
   cache.mtimeMs = stat.mtimeMs
@@ -125,7 +277,7 @@ export async function loadConfig(force = false) {
 export async function saveConfig(config) {
   await ensureStorage()
   const data = normalizeConfig(config)
-  await fs.writeFile(CONFIG_FILE, YAML.stringify(data), "utf8")
+  await fs.writeFile(CONFIG_FILE, stringifyConfig(data), "utf8")
   const stat = await fs.stat(CONFIG_FILE)
   cache.loaded = true
   cache.mtimeMs = stat.mtimeMs

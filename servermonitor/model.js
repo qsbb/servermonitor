@@ -1,4 +1,6 @@
 import fs from "node:fs/promises"
+import os from "node:os"
+import { collectLocalSnapshot } from "./local.js"
 import { DATA_DIR, SNAPSHOT_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
 
 const STATE_KEY = "__servermonitor_state__"
@@ -21,6 +23,7 @@ function isFiniteNumber(value) {
 }
 
 function numOrNull(value) {
+  if (value === null || value === undefined || value === "") return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }
@@ -191,6 +194,69 @@ function updateRecordFromSnapshot(serverName, snap, receivedAt = Date.now()) {
   record.updatedAt = receivedAt
   record.state = "online"
   return record
+}
+
+function buildBasicLocalSnapshot() {
+  const totalMem = os.totalmem()
+  return {
+    v: 1,
+    name: os.hostname(),
+    agent_ts: Date.now(),
+    os: {
+      platform: os.platform(),
+      distro: null,
+      release: os.release(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      uptime: os.uptime(),
+    },
+    cpu: {
+      model: os.cpus()?.[0]?.model || null,
+      cores: os.cpus().length,
+      usage: null,
+      temp: null,
+      power: null,
+    },
+    gpus: [],
+    mem: {
+      used: +((totalMem - os.freemem()) / 1024 ** 3).toFixed(1),
+      total: +(totalMem / 1024 ** 3).toFixed(1),
+      swapUsed: null,
+      swapTotal: null,
+    },
+    net: null,
+    disks: [],
+    load: process.platform === "win32" ? null : os.loadavg().slice(0, 3).map(i => +Number(i).toFixed(2)),
+  }
+}
+
+function isLocalName(name) {
+  const value = String(name || "").trim().toLowerCase()
+  const host = os.hostname().toLowerCase()
+  return ["本机", "local", "localhost"].includes(value) || value === host
+}
+
+async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
+  let raw
+  try {
+    raw = await collectLocalSnapshot()
+  } catch {
+    raw = buildBasicLocalSnapshot()
+  }
+  const snap = sanitizeSnapshot(raw || buildBasicLocalSnapshot())
+  const host = snap.os?.hostname || snap.name || os.hostname()
+  const conf = {
+    name: "本机",
+    note: host && host !== "本机" ? host : "Yunzai 所在主机",
+  }
+  const record = {
+    snap,
+    lastSeen: now,
+    updatedAt: now,
+    state: "online",
+    alertedAt: 0,
+  }
+  return decorateEntry(conf, record, now, timeoutMs)
 }
 
 function formatDuration(seconds) {
@@ -458,7 +524,11 @@ export async function getEntries() {
   const config = await refreshConfig()
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
-  return config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
+  const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
+  if (!config.include_local) return registered
+  const hasLocalRegistered = config.servers.some(conf => isLocalName(conf.name))
+  const local = hasLocalRegistered ? [] : [await buildLocalEntry(timeoutMs, now)]
+  return [...local, ...registered]
 }
 
 export async function getEntryByName(name) {
@@ -467,7 +537,7 @@ export async function getEntryByName(name) {
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
   const conf = resolveConfigServer(name)
-  if (!conf) return null
+  if (!conf) return isLocalName(name) ? await buildLocalEntry(timeoutMs, now) : null
   return decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs)
 }
 
@@ -513,7 +583,12 @@ export async function buildTextFallback(entries) {
 
 export async function listServersText() {
   await bootstrap()
-  const entries = await getEntries()
+  const config = await refreshConfig()
+  const timeoutMs = config.offline_timeout * 1000
+  const now = Date.now()
+  const entries = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
+  if (!entries.length) return "尚未注册服务器；发送 #服务器状态 将显示本机状态。"
+
   const lines = []
   lines.push(`已注册 ${entries.length} 台服务器`)
   for (const item of entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
