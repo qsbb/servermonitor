@@ -77,6 +77,7 @@ offline_timeout: 30   # 超过多少秒未上报判定离线
 
 ## 部署文档
 
+- 快速部署教程见：`快速部署教程.md`
 - 详细安装步骤见：`部署文档.md`
 - 服务器侧 agent 说明见：`agent/README.md`
 
@@ -96,6 +97,9 @@ offline_timeout: 30   # 超过多少秒未上报判定离线
 
 ```text
 servermonitor/
+├── README.md
+├── 快速部署教程.md
+├── 部署文档.md
 ├── index.js
 ├── server.js
 ├── model.js

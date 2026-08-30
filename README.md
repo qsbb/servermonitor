@@ -15,6 +15,7 @@ server-status-plugin/
 ├── 开发文档.md
 └── servermonitor/
     ├── README.md
+    ├── 快速部署教程.md
     ├── 部署文档.md
     ├── index.js
     ├── server.js
@@ -49,7 +50,8 @@ server-status-plugin/
 ## 文档
 
 - 插件说明：`servermonitor/README.md`
-- 部署文档：`servermonitor/部署文档.md`
+- 快速部署：`servermonitor/快速部署教程.md`
+- 完整部署文档：`servermonitor/部署文档.md`
 - agent 文档：`servermonitor/agent/README.md`
 - 开发设计：`开发文档.md`
 

@@ -1,6 +1,6 @@
 # servermonitor agent
 
-这是 `servermonitor` 的服务器侧采集程序。完整部署流程见上级目录的 `部署文档.md`。
+这是 `servermonitor` 的服务器侧采集程序。快速部署见上级目录的 `快速部署教程.md`，完整部署流程见上级目录的 `部署文档.md`。
 
 ## 依赖
 
