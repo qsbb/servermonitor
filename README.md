@@ -5,6 +5,7 @@
 ## 功能
 
 - `#服务器状态`：查看状态图；默认包含 Yunzai 本机，并按名称展示已注册服务器
+- 状态卡片为深色玻璃拟态风格，并按数量自适应布局：≤3 台单列，≥4 台双列网格
 - `#服务器状态 <名称>`：查看单台服务器详情
 - `#服务器状态列表`：列出所有已注册服务器
 - `#服务器状态待绑定`：主人私聊查看已上报但未绑定的 token
@@ -169,6 +170,7 @@ Windows 可运行：
 | Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report` |
 | Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
+| Windows 单文件 exe | 从 Release 下载 `servermonitor-agent.exe`，双击配置并开启开机自启 |
 
 GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试：
 

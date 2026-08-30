@@ -88,23 +88,27 @@ export class servermonitor extends plugin {
     for (let i = 0; i < entries.length; i += pageSize) pages.push(entries.slice(i, i + pageSize))
 
     const segs = []
-    try {
-      if (this.e?.runtime?.render) {
-        for (const [idx, pageEntries] of pages.entries()) {
-          const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries)
+    if (this.e?.runtime?.render) {
+      for (const [idx, pageEntries] of pages.entries()) {
+        try {
+          const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries, config)
           const seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", data, {
             retType: "base64",
             imgType: config.render?.imgType || "png",
-            saveId: `status_${Date.now()}_${idx}`,
+            saveId: `servermonitor_status_p${idx + 1}_of_${pages.length}`,
           })
           if (seg) segs.push(seg)
+          else ;(globalThis.logger || console).warn(`[servermonitor] page ${idx + 1} rendered empty`)
+        } catch (err) {
+          ;(globalThis.logger || console).warn(`[servermonitor] render page ${idx + 1} failed`, err)
         }
       }
-    } catch (err) {
-      ;(globalThis.logger || console).warn("[servermonitor] render status failed", err)
     }
 
     if (!segs.length) return this.reply(await buildTextFallback(entries))
+    if (segs.length < pages.length) {
+      ;(globalThis.logger || console).warn(`[servermonitor] partial render: ${segs.length}/${pages.length}`)
+    }
     return this.reply(segs.length === 1 ? segs[0] : segs)
   }
 
@@ -122,17 +126,13 @@ export class servermonitor extends plugin {
     let seg = null
     try {
       if (this.e?.runtime?.render) {
-        seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", {
-          summary: `服务器【${entry.name}】详情`,
-          servers: [entry],
-          pageNum: 1,
-          pageCount: 1,
-          detail: true,
-          updateTime: new Date().toLocaleString(),
-        }, {
+        const data = await buildStatusData([entry], 1, 1, [entry], config)
+        data.summary = `服务器【${entry.name}】详情`
+        data.detail = true
+        seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", data, {
           retType: "base64",
           imgType: config.render?.imgType || "png",
-          saveId: `detail_${Date.now()}`,
+          saveId: "servermonitor_detail",
         })
       }
     } catch (err) {

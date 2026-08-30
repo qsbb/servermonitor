@@ -199,12 +199,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-Environment=SM_NAME=${SM_NAME}
-Environment=SM_TOKEN=${SM_TOKEN}
-Environment=SM_REPORT_URL=${SM_REPORT_URL}
-Environment=SM_INTERVAL=${SM_INTERVAL}
-Environment=SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}
-Environment=SM_TIMEOUT=${SM_TIMEOUT}
+Environment="SM_NAME=${SM_NAME}"
+Environment="SM_TOKEN=${SM_TOKEN}"
+Environment="SM_REPORT_URL=${SM_REPORT_URL}"
+Environment="SM_INTERVAL=${SM_INTERVAL}"
+Environment="SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}"
+Environment="SM_TIMEOUT=${SM_TIMEOUT}"
 ExecStart=${NODE_BIN} ${INSTALL_DIR}/agent.mjs
 Restart=always
 RestartSec=5

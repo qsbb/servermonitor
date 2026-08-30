@@ -13,3 +13,6 @@ data/*
 *.pid
 .DS_Store
 Thumbs.db
+core.*
+.cache/
+design/

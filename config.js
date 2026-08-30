@@ -245,7 +245,7 @@ export function normalizeConfig(input = {}) {
 
   const render = config.render && typeof config.render === "object" ? config.render : {}
   base.render = {
-    imgType: ["png", "jpeg"].includes(String(render.imgType || "").toLowerCase())
+    imgType: ["png", "jpeg", "webp"].includes(String(render.imgType || "").toLowerCase())
       ? String(render.imgType).toLowerCase()
       : base.render.imgType,
   }
@@ -254,12 +254,19 @@ export function normalizeConfig(input = {}) {
   return base
 }
 
+async function atomicWriteFile(file, content) {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  await fs.writeFile(tmp, content, "utf8")
+  await fs.rename(tmp, file)
+}
+
 async function ensureStorage() {
   await fs.mkdir(DATA_DIR, { recursive: true })
   try {
     await fs.access(CONFIG_FILE)
   } catch {
-    await fs.writeFile(CONFIG_FILE, stringifyConfig({ ...DEFAULT_CONFIG, shared_token: makeToken() }), "utf8")
+    await atomicWriteFile(CONFIG_FILE, stringifyConfig({ ...DEFAULT_CONFIG, shared_token: makeToken() }))
   }
 }
 
@@ -271,9 +278,21 @@ export async function loadConfig(force = false) {
   }
   const raw = await fs.readFile(CONFIG_FILE, "utf8")
   const parsed = parseConfigText(raw)
+
+  if (raw.trim() && Object.keys(parsed).length === 0) {
+    const backup = `${CONFIG_FILE}.corrupt-${Date.now()}`
+    await fs.copyFile(CONFIG_FILE, backup).catch(() => {})
+    ;(globalThis.logger || console).error(`[servermonitor] config.yaml 解析失败，已备份到 ${backup}，本次使用默认配置`)
+    const data = normalizeConfig({})
+    cache.loaded = true
+    cache.mtimeMs = stat.mtimeMs
+    cache.data = data
+    return clone(data)
+  }
+
   const data = normalizeConfig(parsed)
   if (!String(parsed.shared_token || "").trim()) {
-    await fs.writeFile(CONFIG_FILE, stringifyConfig(data), "utf8")
+    await atomicWriteFile(CONFIG_FILE, stringifyConfig(data))
     stat = await fs.stat(CONFIG_FILE)
   }
   cache.loaded = true
@@ -285,7 +304,7 @@ export async function loadConfig(force = false) {
 export async function saveConfig(config) {
   await ensureStorage()
   const data = normalizeConfig(config)
-  await fs.writeFile(CONFIG_FILE, stringifyConfig(data), "utf8")
+  await atomicWriteFile(CONFIG_FILE, stringifyConfig(data))
   const stat = await fs.stat(CONFIG_FILE)
   cache.loaded = true
   cache.mtimeMs = stat.mtimeMs

@@ -1,12 +1,20 @@
 import si from "systeminformation"
 import os from "node:os"
 import fs from "node:fs/promises"
+import fssync from "node:fs"
 import path from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { createInterface } from "node:readline/promises"
+import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.12"
+const AGENT_VERSION = "0.1.13"
+
+const THIS_FILE = fileURLToPath(import.meta.url)
+const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
+const CONFIG_FILE = path.join(EXE_DIR, "servermonitor-agent.json")
+const WINDOWS_TASK_NAME = "ServerMonitorAgent"
 
 function parseArgs(argv = []) {
   const out = {}
@@ -25,8 +33,11 @@ function parseArgs(argv = []) {
 }
 
 function help() {
-  return `usage: node agent.mjs --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--dry-run] [--once]
+  return `usage: agent.exe run                       使用配置文件常驻运行
+       agent.exe                           打开 Windows 配置菜单
+       node agent.mjs --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--dry-run] [--once]
 
+config: servermonitor-agent.json（与 exe 同目录）
 env: SM_NAME, SM_TOKEN, SM_REPORT_URL, SM_INTERVAL, SM_SLOW_INTERVAL, SM_TIMEOUT, SM_DRY_RUN, SM_ONCE`
 }
 
@@ -88,8 +99,8 @@ function pickActiveInterface(list = []) {
 }
 
 function filterDisks(list = []) {
-  const badType = /^(tmpfs|devtmpfs|overlay|squashfs|ramfs|efivarfs|autofs)$/i
-  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/var\/lib\/docker|\/var\/lib\/containers)/i
+  const badType = /^(tmpfs|devtmpfs|overlay|squashfs|ramfs|efivarfs|autofs|vfat|iso9660)$/i
+  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers)/i
   const seen = new Set()
   return list
     .filter(item => item && !badType.test(String(item.type || "")) && !badMount.test(String(item.mount || "")))
@@ -100,7 +111,7 @@ function filterDisks(list = []) {
       return true
     })
     .map(item => ({
-      mount: String(item.mount || item.fs || "").trim() || "?",
+      mount: String(item.mount || item.fs || "").trim() === "/host" ? "/" : String(item.mount || item.fs || "").trim() || "?",
       used: gb(item.used),
       total: gb(item.size ?? item.total),
     }))
@@ -251,6 +262,9 @@ class Collector {
     this.lastFastAt = 0
     this.lastSlowAt = 0
     this.raplPrev = new Map()
+    this.failCount = 0
+    // systeminformation needs two samples before network rates become available
+    si.networkStats().catch(() => [])
   }
 
   async refreshStatic(force = false) {
@@ -381,19 +395,179 @@ async function postSnapshot(url, token, payload, timeout = 5000) {
   }
 }
 
+async function loadFileConfig() {
+  try {
+    const raw = await fs.readFile(CONFIG_FILE, "utf8")
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+async function saveFileConfig(config) {
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), "utf8")
+}
+
+async function promptLine(rl, question, defaultValue = "") {
+  const answer = await rl.question(`${question}${defaultValue ? ` [${defaultValue}]` : ""}: `)
+  return (answer.trim() || defaultValue).trim()
+}
+
+async function promptNumber(rl, question, defaultValue) {
+  const raw = await promptLine(rl, question, String(defaultValue))
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : defaultValue
+}
+
+async function windowsTaskExists() {
+  try {
+    await execFileAsync("schtasks", ["/Query", "/TN", WINDOWS_TASK_NAME], { windowsHide: true })
+    return true
+  } catch {
+    try {
+      await execFileAsync("reg", ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", WINDOWS_TASK_NAME], { windowsHide: true })
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+async function enableWindowsAutostart(target) {
+  try {
+    await execFileAsync("schtasks", ["/Create", "/TN", WINDOWS_TASK_NAME, "/TR", target, "/SC", "ONSTART", "/RU", "SYSTEM", "/RL", "HIGHEST", "/F"], { windowsHide: true })
+    return `系统级开机自启已启用：schtasks /TN ${WINDOWS_TASK_NAME}`
+  } catch (taskErr) {
+    try {
+      await execFileAsync("reg", ["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", WINDOWS_TASK_NAME, "/t", "REG_SZ", "/d", target, "/f"], { windowsHide: true })
+      return `当前用户开机自启已启用（无管理员权限，已改用注册表）`
+    } catch (regErr) {
+      throw new Error(`启用自启失败：${taskErr.message || taskErr} / ${regErr.message || regErr}`)
+    }
+  }
+}
+
+async function disableWindowsAutostart() {
+  const messages = []
+  try {
+    await execFileAsync("schtasks", ["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"], { windowsHide: true })
+    messages.push(`系统级自启任务已删除`)
+  } catch {}
+  try {
+    await execFileAsync("reg", ["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", WINDOWS_TASK_NAME, "/f"], { windowsHide: true })
+    messages.push(`当前用户注册表自启已删除`)
+  } catch {}
+  return messages.length ? messages.join("；") : "没有发现已启用的开机自启"
+}
+
+async function showWindowsMenu() {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    while (true) {
+      const config = await loadFileConfig()
+      const autostart = await windowsTaskExists()
+      console.log(`\n=== ServerMonitor Windows Agent v${AGENT_VERSION} ===`)
+      console.log(`配置文件：${CONFIG_FILE}`)
+      console.log(`名称：${config.name || "未设置"}`)
+      console.log(`上报地址：${config.reportUrl || "未设置"}`)
+      console.log(`token：${config.token ? `${String(config.token).slice(0, 6)}...${String(config.token).slice(-6)}` : "未设置"}`)
+      console.log(`开机自启：${autostart ? "已启用" : "未启用"}`)
+      console.log(`\n  1. 配置名称/token/上报地址`)
+      console.log(`  2. 启用开机自启`)
+      console.log(`  3. 关闭开机自启`)
+      console.log(`  4. 立即测试一次上报`)
+      console.log(`  5. 常驻运行（占用当前窗口）`)
+      console.log(`  0. 退出`)
+      const choice = await rl.question("请选择编号: ")
+      const num = Number(choice.trim())
+
+      if (num === 0) return
+      if (num === 1) {
+        const next = { ...config }
+        next.name = await promptLine(rl, "服务器名称", config.name || "win-01")
+        next.reportUrl = await promptLine(rl, "上报地址", config.reportUrl || "http://127.0.0.1:2536/servermonitor/report")
+        next.token = await promptLine(rl, "上报 token", config.token || "")
+        next.interval = await promptNumber(rl, "基础上报间隔秒", Number(config.interval || 10))
+        next.slowInterval = await promptNumber(rl, "慢速采集间隔秒", Number(config.slowInterval || next.interval || 30))
+        next.timeout = await promptNumber(rl, "上传超时毫秒", Number(config.timeout || 5000))
+        await saveFileConfig(next)
+        console.log("配置已保存")
+      } else if (num === 2) {
+        const target = process.pkg
+          ? `"${process.execPath}" run`
+          : `"${process.execPath}" "${THIS_FILE}" run`
+        console.log(await enableWindowsAutostart(target))
+      } else if (num === 3) {
+        console.log(await disableWindowsAutostart())
+      } else if (num === 4) {
+        const name = String(config.name || envValue("SM_NAME")).trim()
+        const token = String(config.token || envValue("SM_TOKEN")).trim()
+        const reportUrl = String(config.reportUrl || envValue("SM_REPORT_URL")).trim()
+        if (!name || !token || !reportUrl) {
+          console.log("请先完成配置")
+          continue
+        }
+        const collector = new Collector({ slowInterval: Math.max(10, Number(config.slowInterval || 30)) * 1000 })
+        collector.name = name
+        try {
+          const snap = await collector.snapshot()
+          await postSnapshot(reportUrl, token, snap, Math.max(1000, Number(config.timeout || 5000)))
+          console.log("测试上报成功")
+        } catch (err) {
+          console.error(`测试上报失败：${err.message || err}`)
+        }
+      } else if (num === 5) {
+        const saved = await loadFileConfig()
+        const name = String(saved.name || envValue("SM_NAME")).trim()
+        const token = String(saved.token || envValue("SM_TOKEN")).trim()
+        const reportUrl = String(saved.reportUrl || envValue("SM_REPORT_URL")).trim()
+        if (!name || !token || !reportUrl) {
+          console.log("请先完成配置")
+          continue
+        }
+        const collector = new Collector({ slowInterval: Math.max(10, Number(saved.slowInterval || 30)) * 1000 })
+        collector.name = name
+        while (true) {
+          try {
+            const snap = await collector.snapshot()
+            await postSnapshot(reportUrl, token, snap, Math.max(1000, Number(saved.timeout || 5000)))
+            console.log(`[servermonitor-agent] ${name} uploaded @ ${new Date().toISOString()}`)
+            await new Promise(resolve => setTimeout(resolve, Math.max(5, Number(saved.interval || 10)) * 1000))
+          } catch (err) {
+            console.error(`[servermonitor-agent] ${name} upload failed: ${err.message || err}`)
+            await new Promise(resolve => setTimeout(resolve, 30000))
+          }
+        }
+      }
+    }
+  } finally {
+    rl.close()
+  }
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2))
+  const cliArgv = process.argv.slice(2)
+  const runMode = cliArgv.includes("run")
+  const args = parseArgs(cliArgv)
   if (args.help) {
     console.log(help())
     process.exit(0)
   }
 
-  const name = String(args.name || envValue("SM_NAME")).trim()
-  const token = String(args.token || envValue("SM_TOKEN")).trim()
-  const reportUrl = String(args["report-url"] || args.reportUrl || envValue("SM_REPORT_URL", "http://127.0.0.1:2536/servermonitor/report")).trim()
-  const interval = Math.max(5, Number(args.interval || envValue("SM_INTERVAL")) || 10)
-  const slowInterval = Math.max(interval, Number(args["slow-interval"] || args.slowInterval || envValue("SM_SLOW_INTERVAL")) || 30)
-  const timeout = Math.max(1000, Number(args.timeout || envValue("SM_TIMEOUT")) || 5000)
+  if (process.platform === "win32" && cliArgv.length === 0) {
+    await showWindowsMenu()
+    return
+  }
+
+  const fileConfig = await loadFileConfig()
+
+  const name = String(args.name || envValue("SM_NAME") || fileConfig.name).trim()
+  const token = String(args.token || envValue("SM_TOKEN") || fileConfig.token).trim()
+  const reportUrl = String(args["report-url"] || args.reportUrl || envValue("SM_REPORT_URL") || fileConfig.reportUrl || "http://127.0.0.1:2536/servermonitor/report").trim()
+  const interval = Math.max(5, Number(args.interval || envValue("SM_INTERVAL") || fileConfig.interval) || 10)
+  const slowInterval = Math.max(interval, Number(args["slow-interval"] || args.slowInterval || envValue("SM_SLOW_INTERVAL") || fileConfig.slowInterval) || 30)
+  const timeout = Math.max(1000, Number(args.timeout || envValue("SM_TIMEOUT") || fileConfig.timeout) || 5000)
   const dryRun = Boolean(args["dry-run"] || args.dryRun || boolValue(envValue("SM_DRY_RUN")))
   const once = Boolean(args.once || boolValue(envValue("SM_ONCE")))
 
@@ -413,10 +587,16 @@ async function main() {
     }
     try {
       await postSnapshot(reportUrl, token, snap, timeout)
+      if (collector.failCount > 0) {
+        console.log(`[servermonitor-agent] ${name} recovered after ${collector.failCount} failed upload(s)`)
+        collector.failCount = 0
+      }
       console.log(`[servermonitor-agent] ${name} uploaded @ ${new Date().toISOString()}`)
       return true
     } catch (err) {
-      console.error(`[servermonitor-agent] ${name} upload failed: ${err.message || err}`)
+      collector.failCount += 1
+      const cause = err?.cause?.message || err?.cause?.code || err?.cause || ""
+      console.error(`[servermonitor-agent] ${name} upload failed (#${collector.failCount}): ${err.message || err}${cause ? ` · cause: ${cause}` : ""}`)
       return false
     }
   }
@@ -434,7 +614,7 @@ async function main() {
   let backoff = interval
   while (true) {
     const ok = await tick()
-    backoff = ok ? interval : Math.min(backoff * 2, 60)
+    backoff = ok ? interval : Math.min(backoff * 2, Math.max(20, interval * 2))
     await new Promise(resolve => setTimeout(resolve, backoff * 1000))
   }
 }

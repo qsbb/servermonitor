@@ -233,20 +233,29 @@ async function readLinuxNetTotals() {
 }
 
 async function collectLinuxNet() {
+  const badIface = /^(lo|docker|veth|br-|virbr|tun|tap|vmnet|vboxnet|utun|awdl|llw)/i
+  const startedAt = Date.now()
   const first = await readLinuxNetTotals()
   await sleep(200)
   const second = await readLinuxNetTotals()
+  const dt = Math.max(0.05, (Date.now() - startedAt) / 1000)
   const map = new Map(first.map(item => [item.iface, item]))
-  const candidates = second.filter(item => item.iface !== "lo")
-  const active = candidates.sort((a, b) => (b.rxBytes + b.txBytes) - (a.rxBytes + a.txBytes))[0] || second[0] || null
+  const candidates = second.filter(item => item.iface && !badIface.test(item.iface))
+  const active = candidates
+    .map(item => {
+      const prev = map.get(item.iface) || { rxBytes: item.rxBytes, txBytes: item.txBytes }
+      return {
+        ...item,
+        deltaRx: Math.max(0, item.rxBytes - prev.rxBytes),
+        deltaTx: Math.max(0, item.txBytes - prev.txBytes),
+      }
+    })
+    .sort((a, b) => (b.deltaRx + b.deltaTx) - (a.deltaRx + a.deltaTx))[0]
   if (!active) return null
-  const prev = map.get(active.iface) || { rxBytes: active.rxBytes, txBytes: active.txBytes }
-  const deltaRx = Math.max(0, active.rxBytes - prev.rxBytes)
-  const deltaTx = Math.max(0, active.txBytes - prev.txBytes)
   return {
     iface: active.iface,
-    rxSec: +(deltaRx / 1024 / 1024 / 0.2).toFixed(2),
-    txSec: +(deltaTx / 1024 / 1024 / 0.2).toFixed(2),
+    rxSec: +(active.deltaRx / 1024 / 1024 / dt).toFixed(2),
+    txSec: +(active.deltaTx / 1024 / 1024 / dt).toFixed(2),
     rxTotal: gb(active.rxBytes),
     txTotal: gb(active.txBytes),
   }

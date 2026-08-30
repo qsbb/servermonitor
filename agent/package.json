@@ -2,14 +2,22 @@
   "name": "servermonitor-agent",
   "private": true,
   "type": "module",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "servermonitor agent for host metric reporting",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "start": "node agent.mjs",
-    "dry-run": "node agent.mjs --dry-run"
+    "dry-run": "node agent.mjs --dry-run",
+    "build:exe": "pkg . --targets node18-win-x64 --output ../dist/servermonitor-agent.exe"
+  },
+  "bin": "agent.mjs",
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "../dist"
   },
   "dependencies": {
     "systeminformation": "^5.24.0"

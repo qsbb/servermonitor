@@ -1,5 +1,6 @@
 import fs from "node:fs/promises"
 import os from "node:os"
+import path from "node:path"
 import { collectLocalSnapshot } from "./local.js"
 import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
 
@@ -41,6 +42,41 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, n))
 }
 
+function clampNonNegative(value, max = Number.MAX_SAFE_INTEGER) {
+  const n = numOrNull(value)
+  if (n === null || n < 0) return null
+  return Math.min(n, max)
+}
+
+function clampTemp(value) {
+  const n = numOrNull(value)
+  if (n === null || n < -20 || n > 150) return null
+  return n
+}
+
+function clampPower(value) {
+  const n = numOrNull(value)
+  if (n === null || n < 0 || n > 10000) return null
+  return n
+}
+
+async function atomicWriteJson(file, payload) {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2), "utf8")
+  await fs.rename(tmp, file)
+}
+
+function isEmptySnapshot(snap) {
+  if (!snap || typeof snap !== "object") return true
+  const hasCpu = snap.cpu?.usage !== null || snap.cpu?.cores !== null || snap.cpu?.model !== null
+  const hasMem = snap.mem?.total !== null || snap.mem?.used !== null
+  const hasDisk = Array.isArray(snap.disks) && snap.disks.length > 0
+  const hasGpu = Array.isArray(snap.gpus) && snap.gpus.length > 0
+  const hasOs = snap.os?.hostname !== null || snap.os?.platform !== null
+  return !hasCpu && !hasMem && !hasDisk && !hasGpu && !hasOs
+}
+
 function buildIndexes(config) {
   state.configIndexByName.clear()
   state.configIndexByToken.clear()
@@ -80,12 +116,19 @@ async function hydratePersisted() {
 }
 
 async function hydratePending() {
+  const maxAgeMs = 24 * 60 * 60 * 1000
+  const maxEntries = 100
   try {
     const raw = await fs.readFile(PENDING_FILE, "utf8")
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed?.pending)) {
-      for (const item of parsed.pending) {
-        if (!item?.token || !item?.name) continue
+      const now = Date.now()
+      const valid = parsed.pending
+        .filter(item => item?.token && item?.name)
+        .filter(item => now - (Number(item.lastSeen) || 0) <= maxAgeMs)
+        .sort((a, b) => (Number(b.lastSeen) || 0) - (Number(a.lastSeen) || 0))
+        .slice(0, maxEntries)
+      for (const item of valid) {
         state.pendingReports.set(String(item.token), {
           token: String(item.token),
           name: sanitizeServerName(item.name),
@@ -98,13 +141,16 @@ async function hydratePending() {
 }
 
 async function persistPending() {
-  await fs.mkdir(DATA_DIR, { recursive: true })
-  const payload = {
-    v: 1,
-    savedAt: Date.now(),
-    pending: [...state.pendingReports.values()],
-  }
-  await fs.writeFile(PENDING_FILE, JSON.stringify(payload, null, 2), "utf8")
+  const maxAgeMs = 24 * 60 * 60 * 1000
+  const maxEntries = 100
+  const now = Date.now()
+  const pending = [...state.pendingReports.values()]
+    .filter(item => now - (item.lastSeen || 0) <= maxAgeMs)
+    .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+    .slice(0, maxEntries)
+  state.pendingReports = new Map(pending.map(item => [item.token, item]))
+  const payload = { v: 1, savedAt: now, pending }
+  await atomicWriteJson(PENDING_FILE, payload)
 }
 
 async function savePendingReport(token, snap, receivedAt = Date.now()) {
@@ -158,7 +204,10 @@ function resolveConfigByToken(token) {
 
 function sanitizeServerName(value) {
   const raw = strOrNull(value) || ""
-  return raw.replace(/\s+/g, "_").slice(0, 32)
+  return raw
+    .replace(/[<>&"'`\\]/g, "")
+    .replace(/\s+/g, "_")
+    .slice(0, 32)
 }
 
 function sanitizeSnapshot(body) {
@@ -172,11 +221,12 @@ function sanitizeSnapshot(body) {
           if (!item || typeof item !== "object") return null
           return {
             mount: strOrNull(item.mount),
-            used: numOrNull(item.used),
-            total: numOrNull(item.total),
+            used: clampNonNegative(item.used),
+            total: clampNonNegative(item.total),
           }
         })
-        .filter(Boolean)
+        .filter(item => item.mount && item.total !== null)
+        .filter(item => item.used === null || item.used <= item.total)
     : []
   const gpus = Array.isArray(body.gpus)
     ? body.gpus
@@ -185,50 +235,62 @@ function sanitizeSnapshot(body) {
           return {
             model: strOrNull(item.model),
             usage: clampPercent(item.usage),
-            temp: numOrNull(item.temp),
-            memUsed: numOrNull(item.memUsed),
-            memTotal: numOrNull(item.memTotal),
-            power: numOrNull(item.power),
+            temp: clampTemp(item.temp),
+            memUsed: clampNonNegative(item.memUsed),
+            memTotal: clampNonNegative(item.memTotal),
+            power: clampPower(item.power),
           }
         })
         .filter(Boolean)
     : null
 
+  const now = Date.now()
+  let agentTs = numOrNull(body.agent_ts) || now
+  if (agentTs > now + 5 * 60 * 1000 || agentTs < now - 365 * 24 * 60 * 60 * 1000) agentTs = now
+
+  let memUsed = clampNonNegative(mem.used)
+  const memTotal = clampNonNegative(mem.total)
+  if (memUsed !== null && memTotal !== null && memUsed > memTotal) memUsed = memTotal
+
+  let swapUsed = clampNonNegative(mem.swapUsed)
+  const swapTotal = clampNonNegative(mem.swapTotal)
+  if (swapUsed !== null && swapTotal !== null && swapUsed > swapTotal) swapUsed = swapTotal
+
   return {
     v: 1,
     name: strOrNull(body.name) || "",
-    agent_ts: numOrNull(body.agent_ts) || Date.now(),
+    agent_ts: agentTs,
     os: {
       platform: strOrNull(os.platform),
       distro: strOrNull(os.distro),
       release: strOrNull(os.release),
       arch: strOrNull(os.arch),
       hostname: strOrNull(os.hostname),
-      uptime: numOrNull(os.uptime),
+      uptime: clampNonNegative(os.uptime),
     },
     cpu: {
       model: strOrNull(cpu.model),
-      cores: numOrNull(cpu.cores),
+      cores: clampNonNegative(cpu.cores, 4096),
       usage: clampPercent(cpu.usage),
-      temp: numOrNull(cpu.temp),
-      power: numOrNull(cpu.power),
+      temp: clampTemp(cpu.temp),
+      power: clampPower(cpu.power),
     },
     gpus,
     mem: {
-      used: numOrNull(mem.used),
-      total: numOrNull(mem.total),
-      swapUsed: numOrNull(mem.swapUsed),
-      swapTotal: numOrNull(mem.swapTotal),
+      used: memUsed,
+      total: memTotal,
+      swapUsed,
+      swapTotal,
     },
     net: {
       iface: strOrNull(net.iface),
-      rxSec: numOrNull(net.rxSec),
-      txSec: numOrNull(net.txSec),
-      rxTotal: numOrNull(net.rxTotal),
-      txTotal: numOrNull(net.txTotal),
+      rxSec: clampNonNegative(net.rxSec, 1024 * 1024),
+      txSec: clampNonNegative(net.txSec, 1024 * 1024),
+      rxTotal: clampNonNegative(net.rxTotal),
+      txTotal: clampNonNegative(net.txTotal),
     },
     disks,
-    load: Array.isArray(body.load) ? body.load.map(numOrNull).slice(0, 3) : null,
+    load: Array.isArray(body.load) ? body.load.map(value => clampNonNegative(value, 10000)).slice(0, 3) : null,
   }
 }
 
@@ -317,9 +379,9 @@ function formatDuration(seconds) {
   const parts = []
   if (days) parts.push(`${days}天`)
   if (hours) parts.push(`${hours}小时`)
-  if (!days && minutes) parts.push(`${minutes}分`)
-  if (!days && !hours && !minutes && secs !== undefined) parts.push(`${secs}秒`)
-  return parts.join("") || "0秒"
+  if (minutes && (days || hours || !parts.length)) parts.push(`${minutes}分`)
+  if (!parts.length) parts.push(`${secs}秒`)
+  return parts.join("")
 }
 
 function formatAgo(ms) {
@@ -450,6 +512,13 @@ function computeSeverity(record, timeoutMs, now = Date.now()) {
 }
 
 function buildGpuView(snap) {
+  if (snap.gpus === undefined) {
+    return {
+      hasGpu: false,
+      gpuEmptyText: "GPU 数据采集失败",
+      gpus: [],
+    }
+  }
   if (snap.gpus === null) {
     return {
       hasGpu: false,
@@ -518,6 +587,25 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   const powerText = powerParts.length ? powerParts.join(" · ") : "—"
 
   const diskText = snap ? formatDiskText(snap.disks) : "—"
+  const diskView = snap
+    ? (Array.isArray(snap.disks) ? snap.disks : [])
+        .map(d => {
+          const pct = computeUsagePercent(d.used, d.total)
+          const used = formatSizeGB(d.used)
+          const total = formatSizeGB(d.total)
+          return {
+            mount: String(d.mount || "?"),
+            pct: pct ?? 0,
+            hasPct: pct !== null,
+            color: severityColor(pct ?? 0),
+            text: `${String(d.mount || "?")} ${used}/${total} · ${formatPercent(pct)}`,
+            usedText: used,
+            totalText: total,
+          }
+        })
+        .sort((a, b) => b.pct - a.pct)
+        .slice(0, 4)
+    : []
   const gpuView = snap ? buildGpuView(snap) : { hasGpu: false, gpuEmptyText: "—", gpus: [] }
   const osText = snap
     ? `${snap.os?.distro || snap.os?.platform || "未知系统"} · ${snap.os?.release || snap.os?.arch || ""}`.trim()
@@ -526,10 +614,13 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   const loadText = snap ? formatLoad(snap.load) : "—"
   const uptimeText = snap ? formatDuration(snap.os?.uptime) : "—"
   const dataAgeText = ageMs === null ? "从未上报" : formatAgo(ageMs)
-  const lastSeenText = record?.lastSeen ? new Date(record.lastSeen).toLocaleString() : "—"
+  const lastSeenText = record?.lastSeen
+    ? new Date(record.lastSeen).toLocaleString("zh-CN", { hour12: false })
+    : "—"
   const noteText = conf.note || ""
   const name = conf.name
   const stateText = state === "online" ? "在线" : state === "offline" ? "离线" : "未上报"
+  const hasSnap = Boolean(snap)
 
   const borderColor = state === "online"
     ? severityColor(severity)
@@ -544,16 +635,20 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     stateText,
     stateColor: stateColor(state),
     borderColor,
+    hasSnap,
     osText,
     uptimeText,
     dataAgeText,
     lastSeenText,
     cpuModel: snap?.cpu?.model || "未知 CPU",
-    cpuPct: cpuUsage ?? 0,
+    cpuPct: snap ? (cpuUsage ?? 0) : null,
     cpuColor: severityColor(cpuUsage ?? 0),
     cpuText,
     memText,
+    memPct,
+    memColor: severityColor(memPct ?? 0),
     diskText,
+    disks: diskView,
     netText,
     powerText,
     loadText,
@@ -586,9 +681,9 @@ export async function getEntryByName(name) {
   return decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs)
 }
 
-export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEntries = null) {
+export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEntries = null, config = null) {
   await bootstrap()
-  const config = await refreshConfig()
+  if (!config) config = await refreshConfig()
   const list = Array.isArray(entries) ? entries : []
   const scope = Array.isArray(allEntries) && allEntries.length ? allEntries : list
   const online = scope.filter(i => i.state === "online").length
@@ -609,9 +704,13 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
     pageNum,
     pageCount,
     detail: false,
-    updateTime: new Date().toLocaleString(),
+    updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
     pageSize: config.page_size,
     imgType: config.render?.imgType || "png",
+    layout: {
+      cols: list.length >= 4 ? 2 : 1,
+      mode: list.length >= 4 ? "grid" : "stack",
+    },
   }
 }
 
@@ -621,7 +720,8 @@ export async function buildTextFallback(entries) {
   lines.push(`共 ${list.length} 台服务器`)
   for (const item of list) {
     const status = item.state === "online" ? "在线" : item.state === "offline" ? `离线(${item.dataAgeText})` : "未上报"
-    lines.push(`${item.name} · ${status} · CPU ${formatPercent(item.cpuPct)} · 内存 ${item.memText} · 网速 ${item.netText}`)
+    const cpuText = item.hasSnap ? formatPercent(item.cpuPct) : "—"
+    lines.push(`${item.name} · ${status} · CPU ${cpuText} · 内存 ${item.memText} · 网速 ${item.netText}`)
   }
   return lines.join("\n")
 }
@@ -687,6 +787,8 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
     pending = state.pendingReports.get(cleanToken) || null
     if (!pending) throw new Error("未收到该 token 的服务器上报，请先在子服务器启动 agent，或使用 #服务器状态绑定 <名称> <token>")
     cleanName = sanitizeServerName(pending.name)
+  } else {
+    pending = state.pendingReports.get(cleanToken) || null
   }
 
   const cleanNote = String(note || "").trim() || "设备侧生成 token"
@@ -714,9 +816,11 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
   await refreshConfig()
   ensureRecord(cleanName)
 
-  if (pending?.snap) {
-    pending.snap.name = cleanName
-    updateRecordFromSnapshot(cleanName, pending.snap, pending.lastSeen || Date.now())
+  if (pending) {
+    if (pending.snap) {
+      pending.snap.name = cleanName
+      updateRecordFromSnapshot(cleanName, pending.snap, pending.lastSeen || Date.now())
+    }
     state.pendingReports.delete(cleanToken)
     await persistPending()
   }
@@ -801,6 +905,11 @@ export async function handleReport(req, res) {
     }
 
     const snap = sanitizeSnapshot(body)
+    if (isEmptySnapshot(snap)) {
+      log.warn?.(`[servermonitor] report rejected: empty snapshot token=...${tokenTail}`)
+      return res.status(422).json({ ok: false, msg: "empty snapshot" })
+    }
+
     if (!server) {
       const pending = await savePendingReport(token, snap, Date.now())
       if (pending) {
@@ -817,7 +926,24 @@ export async function handleReport(req, res) {
     }
 
     snap.name = server.name
+    const wasOffline = state.records.get(server.name)?.state === "offline"
     updateRecordFromSnapshot(server.name, snap, Date.now())
+
+    if (wasOffline && config.alert?.enabled) {
+      const record = state.records.get(server.name)
+      const cooldownMs = (config.alert?.cooldown || 120) * 1000
+      if (record && Date.now() - (record.alertedAt || 0) >= cooldownMs) {
+        try {
+          if (globalThis.Bot?.sendMasterMsg) {
+            await Bot.sendMasterMsg(`✅ 服务器【${server.name}】已恢复在线`)
+            record.alertedAt = Date.now()
+          }
+        } catch (err) {
+          log.warn?.("[servermonitor] recovery alert failed", err)
+        }
+      }
+    }
+
     log.info?.(`[servermonitor] report accepted: name=${server.name} token=...${tokenTail}${isSharedToken ? " shared" : ""}`)
     return res.json({ ok: true, name: server.name, auto: isSharedToken })
   } catch (err) {
@@ -843,7 +969,6 @@ export async function scanOffline() {
     const isCooldownReady = now - (record.alertedAt || 0) >= (config.alert?.cooldown || 120) * 1000
     const isInteresting = (prevState === "online" && nextState === "offline") || (prevState === "offline" && nextState === "online")
     if (config.alert?.enabled && isCooldownReady && isInteresting) {
-      record.alertedAt = now
       alerts.push({ name: conf.name, from: prevState, to: nextState })
     }
   }
@@ -856,6 +981,11 @@ export async function scanOffline() {
       .join("\n")
     try {
       await Bot.sendMasterMsg(msg)
+      const sentAt = Date.now()
+      for (const item of alerts) {
+        const record = state.records.get(item.name)
+        if (record) record.alertedAt = sentAt
+      }
     } catch (err) {
       ;(globalThis.logger || console).warn("[servermonitor] sendMasterMsg failed", err)
     }
@@ -865,27 +995,32 @@ export async function scanOffline() {
 }
 
 export async function persist() {
-  await bootstrap()
-  await fs.mkdir(DATA_DIR, { recursive: true })
-  const config = await refreshConfig()
-  const payload = {
-    v: 1,
-    savedAt: Date.now(),
-    servers: config.servers.map(conf => {
-      const record = state.records.get(conf.name)
-      return {
-        name: conf.name,
-        lastSeen: record?.lastSeen || 0,
-        state: record?.state || (record?.snap ? "online" : "pending"),
-        alertedAt: record?.alertedAt || 0,
-        updatedAt: record?.updatedAt || 0,
-        snap: record?.snap || null,
-      }
-    }),
+  try {
+    await bootstrap()
+    await fs.mkdir(DATA_DIR, { recursive: true })
+    const config = await refreshConfig()
+    const payload = {
+      v: 1,
+      savedAt: Date.now(),
+      servers: config.servers.map(conf => {
+        const record = state.records.get(conf.name)
+        return {
+          name: conf.name,
+          lastSeen: record?.lastSeen || 0,
+          state: record?.state || (record?.snap ? "online" : "pending"),
+          alertedAt: record?.alertedAt || 0,
+          updatedAt: record?.updatedAt || 0,
+          snap: record?.snap || null,
+        }
+      }),
+    }
+    await atomicWriteJson(SNAPSHOT_FILE, payload)
+    state.lastPersistAt = Date.now()
+    return payload
+  } catch (err) {
+    ;(globalThis.logger || console).warn("[servermonitor] persist failed", err)
+    return null
   }
-  await fs.writeFile(SNAPSHOT_FILE, JSON.stringify(payload, null, 2), "utf8")
-  state.lastPersistAt = Date.now()
-  return payload
 }
 
 export async function loadPersistedSnapshotFile() {

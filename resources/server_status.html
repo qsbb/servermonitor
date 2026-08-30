@@ -1,71 +1,118 @@
 <link rel="stylesheet" href="{{pluResPath}}status.css">
-<div id="container">
-  <div class="sm-topbar">
-    <div class="sm-title">{{if detail}}📋 服务器状态详情{{else}}📊 服务器状态总览{{/if}}</div>
-    <div class="sm-summary">{{summary}}</div>
+<div id="container" class="{{typeof theme !== 'undefined' && theme === 'light' ? 'theme-light' : ''}}">
+  <div class="sb-topbar">
+    <div class="sb-topbar-main">
+      <div class="sb-overline">SERVER MONITOR</div>
+      <div class="sb-title">{{if detail}}服务器状态 · 详情{{else}}服务器状态 · 总览{{/if}}</div>
+      {{if summary}}<div class="sb-summary">{{summary}}</div>{{/if}}
+    </div>
+    <div class="sb-pagechip">第 {{pageNum || 1}} / {{pageCount || 1}} 页</div>
   </div>
 
-  <div class="sm-grid">
+  {{if servers && servers.length}}
+  <div class="sb-list {{layout && layout.cols === 2 ? 'sb-cols-2' : 'sb-cols-1'}}">
     {{each servers s}}
-    <div class="sm-card {{s.state !== 'online' ? 'offline' : ''}}" style="border-color: {{s.borderColor}};">
-      <div class="sm-head">
-        <div class="sm-name">
-          <span>{{s.name}}</span>
-          <span class="sm-badge" style="background: {{s.stateColor}}22; color: {{s.stateColor}}; border: 1px solid {{s.stateColor}}55;">
-            {{s.stateText}}
-          </span>
+    <div class="sb-card {{s.state !== 'online' ? 'is-offline' : ''}}{{s.hasSnap ? '' : ' is-nosnap'}}" style="--accent: {{s.borderColor || '#22d3ee'}};">
+      <i class="sb-rail"></i>
+
+      <div class="sb-card-head">
+        <div class="sb-name-row">
+          <i class="sb-dot" style="background: {{s.stateColor || '#94a3b8'}}; box-shadow: 0 0 8px {{s.stateColor || '#94a3b8'}}66;"></i>
+          <span class="sb-name">{{s.name || '未命名服务器'}}</span>
+          <span class="sb-badge" style="color: {{s.stateColor || '#94a3b8'}}; border-color: {{s.stateColor || '#94a3b8'}}44; background: {{s.stateColor || '#94a3b8'}}14;">{{s.stateText || '—'}}</span>
         </div>
-        <div class="sm-sub">
-          {{if s.noteText}}备注：{{s.noteText}} · {{/if}}
-          {{s.osText}} · 运行 {{s.uptimeText}} · 数据 {{s.dataAgeText}} · 最近上报 {{s.lastSeenText}}
+        <div class="sb-sub">{{s.osText || '—'}}<span class="sb-sub-sep">·</span>运行 {{s.uptimeText || '—'}}</div>
+      </div>
+
+      <div class="sb-section">
+        <div class="sb-split">
+          <div class="sb-gauge">
+            <div class="sb-gauge-head">
+              <span class="sb-label">CPU{{if s.cpuModel}}<span class="sb-label-sub">{{s.cpuModel}}</span>{{/if}}</span>
+              <span class="sb-gauge-value" {{if s.cpuPct != null}}style="color: {{s.cpuColor || '#98a0b3'}};"{{/if}}>{{s.cpuPct == null ? '—' : s.cpuPct.toFixed(1) + '%'}}</span>
+            </div>
+            {{if s.cpuPct != null}}<div class="sb-bar"><i style="width: {{s.cpuPct}}%; background-color: {{s.cpuColor || '#98a0b3'}};"></i></div>{{/if}}
+            {{if s.cpuText}}<div class="sb-note">{{s.cpuText}}</div>{{/if}}
+          </div>
+
+          <div class="sb-gauge">
+            <div class="sb-gauge-head">
+              <span class="sb-label">内存</span>
+              <span class="sb-gauge-value" {{if s.memPct != null}}style="color: {{s.memColor || '#98a0b3'}};"{{/if}}>{{s.memPct == null ? '—' : s.memPct.toFixed(1) + '%'}}</span>
+            </div>
+            {{if s.memPct != null}}<div class="sb-bar"><i style="width: {{s.memPct}}%; background-color: {{s.memColor || '#98a0b3'}};"></i></div>{{/if}}
+            {{if s.memText}}<div class="sb-note">{{s.memText}}</div>{{/if}}
+          </div>
         </div>
       </div>
 
-      <div class="sm-metrics">
-        <div class="sm-section">
-          <div class="sm-label">CPU：{{s.cpuModel}}</div>
-          <div class="sm-bar"><i style="width: {{s.cpuPct}}%; background: {{s.cpuColor}};"></i></div>
-          <div class="sm-text">{{s.cpuText}}</div>
+      <div class="sb-section">
+        <div class="sb-sec-head">
+          <span class="sb-label">磁盘</span>
+          {{if s.disks && s.disks.length}}<span class="sb-sec-tag">{{s.disks.length}} 个挂载点</span>{{/if}}
         </div>
-
-        <div class="sm-section">
-          <div class="sm-label">GPU</div>
-          {{if s.hasGpu}}
-            {{each s.gpus g}}
-            <div style="margin-top: 6px;">
-              <div class="sm-label" style="font-size: 13px; font-weight: 600;">{{g.model}}</div>
-              <div class="sm-bar"><i style="width: {{g.pct}}%; background: {{g.color}};"></i></div>
-              <div class="sm-text">{{g.text}}</div>
+        {{if s.disks && s.disks.length}}
+          {{each s.disks d}}
+          <div class="sb-disk">
+            <div class="sb-disk-line">
+              <span class="sb-disk-mount">{{d.mount || '/'}}</span>
+              <span class="sb-disk-pct" style="color: {{d.color || '#98a0b3'}};">{{d.hasPct ? d.pct.toFixed(1) + '%' : '—'}}</span>
             </div>
-            {{/each}}
-          {{else}}
-            <div class="sm-text sm-muted">{{s.gpuEmptyText}}</div>
-          {{/if}}
-        </div>
+            <div class="sb-bar sb-bar-xs"><i style="width: {{d.hasPct ? d.pct : 0}}%; background-color: {{d.color || '#98a0b3'}};"></i></div>
+            {{if d.text}}<div class="sb-disk-sub">{{d.text}}</div>{{/if}}
+          </div>
+          {{/each}}
+        {{else}}
+          <div class="sb-note">{{s.diskText || '—'}}</div>
+        {{/if}}
+      </div>
 
-        <div class="sm-section">
-          <div class="sm-label">内存</div>
-          <div class="sm-text">{{s.memText}}</div>
+      <div class="sb-section">
+        <div class="sb-split">
+          <div class="sb-cell">
+            <span class="sb-label">网络</span>
+            <div class="sb-note">{{s.netText || '—'}}</div>
+          </div>
+          <div class="sb-cell">
+            <span class="sb-label">负载 / 功耗</span>
+            <div class="sb-kv"><span class="sb-kv-key">负载</span><span class="sb-kv-val">{{s.loadText || '—'}}</span></div>
+            <div class="sb-kv"><span class="sb-kv-key">功耗</span><span class="sb-kv-val">{{s.powerText || '—'}}</span></div>
+          </div>
         </div>
+      </div>
 
-        <div class="sm-section">
-          <div class="sm-label">磁盘</div>
-          <div class="sm-text">{{s.diskText}}</div>
+      {{if s.hasGpu && s.gpus && s.gpus.length}}
+      <div class="sb-section">
+        <div class="sb-sec-head">
+          <span class="sb-label">GPU</span>
+          <span class="sb-sec-tag">{{s.gpus.length}} 张显卡</span>
         </div>
+        {{each s.gpus g}}
+        <div class="sb-gpu">
+          <div class="sb-gpu-head">
+            <span class="sb-gpu-model">{{g.model || 'GPU'}}</span>
+            <span class="sb-gpu-pct" style="color: {{g.color || '#98a0b3'}};">{{g.pct == null ? '—' : g.pct.toFixed(1) + '%'}}</span>
+          </div>
+          {{if g.pct != null}}<div class="sb-bar sb-bar-sm"><i style="width: {{g.pct}}%; background-color: {{g.color || '#98a0b3'}};"></i></div>{{/if}}
+          {{if g.text}}<div class="sb-note">{{g.text}}</div>{{/if}}
+        </div>
+        {{/each}}
+      </div>
+      {{else}}
+      <div class="sb-section sb-section-empty">{{s.gpuEmptyText || '—'}}</div>
+      {{/if}}
 
-        <div class="sm-section">
-          <div class="sm-label">网速</div>
-          <div class="sm-text">{{s.netText}}</div>
-        </div>
-
-        <div class="sm-section">
-          <div class="sm-label">负载 / 功耗</div>
-          <div class="sm-text">负载 {{s.loadText}} · 功耗 {{s.powerText}}</div>
-        </div>
+      <div class="sb-meta">
+        {{if s.noteText}}<span class="sb-meta-item">备注 {{s.noteText}}</span>{{/if}}
+        <span class="sb-meta-item">数据 {{s.dataAgeText || '从未上报'}}</span>
+        <span class="sb-meta-item">上报 {{s.lastSeenText || '—'}}</span>
       </div>
     </div>
     {{/each}}
   </div>
+  {{else}}
+  <div class="sb-empty">暂无服务器数据</div>
+  {{/if}}
 
-  <div class="sm-footer">第 {{pageNum}} / {{pageCount}} 页 · 更新于 {{updateTime}}</div>
+  <div class="sb-footer">更新于 {{updateTime || '—'}}</div>
 </div>

@@ -19,5 +19,6 @@ services:
       SM_TIMEOUT: ${SM_TIMEOUT:-5000}
     volumes:
       - /sys:/sys:ro
+      - /:/host:ro
     # NVIDIA GPU users can enable this when nvidia-container-toolkit is installed:
     # gpus: all
