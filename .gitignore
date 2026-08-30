@@ -4,6 +4,7 @@ agent/node_modules/
 
 # runtime data and secrets
 config.yaml
+.env
 data/*
 !data/.gitkeep
 

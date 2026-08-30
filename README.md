@@ -101,15 +101,41 @@ offline_timeout: 30   # 超过多少秒未上报判定离线
 - 详细安装步骤见：`部署文档.md`
 - 服务器侧 agent 说明见：`agent/README.md`
 
-一键脚本：
+一键安装器：
+
+下载仓库后可直接运行：
+
+```bash
+./install.sh
+```
+
+Windows 可运行：
+
+```powershell
+.\install.ps1
+```
+
+也可以使用远程一键命令：
 
 | 场景 | 命令 |
 | --- | --- |
+| 交互式一键安装器 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.sh)` |
+| Windows 交互式一键安装器 | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.ps1 \| iex` |
 | 安装 Yunzai 插件 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-plugin.sh) /path/to/Yunzai` |
 | Linux systemd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
 | Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
 | Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+
+## 端口说明
+
+`2536` 通常是 TRSS-Yunzai 的 HTTP 服务端口。`servermonitor` 不会额外监听新端口，只是在同一个 `Bot.express` 上新增：
+
+```text
+POST /servermonitor/report
+```
+
+所以它和 OneBotV11 同端口时是不同 HTTP 路径，不是两个程序抢占同一个端口。只有当另一个独立进程已经绑定了同一个端口时，才需要调整 Yunzai 的 HTTP 服务端口。
 
 ## 运行要求
 
@@ -130,6 +156,8 @@ servermonitor/
 ├── README.md
 ├── 快速部署教程.md
 ├── 部署文档.md
+├── install.sh               # Linux/macOS 交互式安装器入口
+├── install.ps1              # Windows 交互式安装器入口
 ├── index.js
 ├── server.js
 ├── model.js

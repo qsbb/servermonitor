@@ -6,7 +6,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.4"
+const AGENT_VERSION = "0.1.5"
 
 function parseArgs(argv = []) {
   const out = {}

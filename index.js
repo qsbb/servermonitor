@@ -192,8 +192,8 @@ export class servermonitor extends plugin {
         interval: 10,
       })
       const hint = baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1")
-        ? "提示：当前 Yunzai 地址是本机地址，请改成 agent 能访问到的公网/内网地址。"
-        : ""
+        ? "提示：servermonitor 复用 Yunzai HTTP 服务端口，只新增 /servermonitor/report 路径；当前地址是本机地址，请改成 agent 能访问到的公网/内网地址。"
+        : "提示：servermonitor 复用 Yunzai HTTP 服务端口，只新增 /servermonitor/report 路径，不额外占用端口。"
       return this.reply([
         `已添加服务器【${item.name}】`,
         item.note ? `备注：${item.note}` : null,

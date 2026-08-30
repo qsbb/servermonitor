@@ -15,8 +15,6 @@ services:
       SM_SLOW_INTERVAL: ${SM_SLOW_INTERVAL:-30}
       SM_TIMEOUT: ${SM_TIMEOUT:-5000}
     volumes:
-      - /sys/class/thermal:/sys/class/thermal:ro
-      - /sys/class/powercap:/sys/class/powercap:ro
-      - /proc/net/dev:/proc/net/dev:ro
+      - /sys:/sys:ro
     # NVIDIA GPU users can enable this when nvidia-container-toolkit is installed:
     # gpus: all
