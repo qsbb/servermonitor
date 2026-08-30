@@ -6,7 +6,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.3"
+const AGENT_VERSION = "0.1.4"
 
 function parseArgs(argv = []) {
   const out = {}
@@ -25,7 +25,20 @@ function parseArgs(argv = []) {
 }
 
 function help() {
-  return `usage: node agent.mjs --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--dry-run] [--once]`
+  return `usage: node agent.mjs --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--dry-run] [--once]
+
+env: SM_NAME, SM_TOKEN, SM_REPORT_URL, SM_INTERVAL, SM_SLOW_INTERVAL, SM_TIMEOUT, SM_DRY_RUN, SM_ONCE`
+}
+
+function envValue(name, fallback = "") {
+  const value = process.env[name]
+  return value === undefined || value === null || value === "" ? fallback : value
+}
+
+function boolValue(value) {
+  if (typeof value === "boolean") return value
+  const text = String(value ?? "").trim().toLowerCase()
+  return ["1", "true", "yes", "y", "on"].includes(text)
 }
 
 function num(value, fallback = null) {
@@ -375,14 +388,14 @@ async function main() {
     process.exit(0)
   }
 
-  const name = String(args.name || "").trim()
-  const token = String(args.token || "").trim()
-  const reportUrl = String(args["report-url"] || args.reportUrl || "http://127.0.0.1:2536/servermonitor/report").trim()
-  const interval = Math.max(5, Number(args.interval) || 10)
-  const slowInterval = Math.max(interval, Number(args["slow-interval"] || args.slowInterval) || 30)
-  const timeout = Math.max(1000, Number(args.timeout) || 5000)
-  const dryRun = Boolean(args["dry-run"] || args.dryRun)
-  const once = Boolean(args.once)
+  const name = String(args.name || envValue("SM_NAME")).trim()
+  const token = String(args.token || envValue("SM_TOKEN")).trim()
+  const reportUrl = String(args["report-url"] || args.reportUrl || envValue("SM_REPORT_URL", "http://127.0.0.1:2536/servermonitor/report")).trim()
+  const interval = Math.max(5, Number(args.interval || envValue("SM_INTERVAL")) || 10)
+  const slowInterval = Math.max(interval, Number(args["slow-interval"] || args.slowInterval || envValue("SM_SLOW_INTERVAL")) || 30)
+  const timeout = Math.max(1000, Number(args.timeout || envValue("SM_TIMEOUT")) || 5000)
+  const dryRun = Boolean(args["dry-run"] || args.dryRun || boolValue(envValue("SM_DRY_RUN")))
+  const once = Boolean(args.once || boolValue(envValue("SM_ONCE")))
 
   if (!name || !token) {
     console.error(help())

@@ -9,6 +9,7 @@
 - `#服务器状态列表`：列出所有已注册服务器
 - `#服务器状态添加 <名称>`：主人私聊登记服务器并生成 token
 - `#服务器状态删除 <名称>`：主人删除已登记服务器
+- Linux / Docker / Windows / macOS 一键部署 agent
 
 ## 架构
 
@@ -100,6 +101,16 @@ offline_timeout: 30   # 超过多少秒未上报判定离线
 - 详细安装步骤见：`部署文档.md`
 - 服务器侧 agent 说明见：`agent/README.md`
 
+一键脚本：
+
+| 场景 | 命令 |
+| --- | --- |
+| 安装 Yunzai 插件 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-plugin.sh) /path/to/Yunzai` |
+| Linux systemd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+| Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+| Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
+| macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+
 ## 运行要求
 
 - Yunzai 端：TRSS-Yunzai + 具备 HTTP 接口能力
@@ -127,6 +138,9 @@ servermonitor/
 ├── package.json
 ├── config.example.yaml
 ├── config.yaml              # 运行时自动生成，含 token，不建议提交
+├── docker-compose.agent.yml # Docker Compose 部署 agent
+├── .env.agent.example       # Docker agent 环境变量示例
+├── scripts/                 # 一键部署脚本
 ├── resources/
 │   ├── server_status.html
 │   └── status.css

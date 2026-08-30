@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_URL="${REPO_URL:-https://github.com/qsbb/servermonitor.git}"
+BRANCH="${BRANCH:-main}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor/agent}"
+PLIST="${PLIST:-/Library/LaunchDaemons/com.servermonitor.agent.plist}"
+SM_NAME="${SM_NAME:-${1:-}}"
+SM_TOKEN="${SM_TOKEN:-${2:-}}"
+SM_REPORT_URL="${SM_REPORT_URL:-${3:-}}"
+SM_INTERVAL="${SM_INTERVAL:-10}"
+SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-30}"
+SM_TIMEOUT="${SM_TIMEOUT:-5000}"
+
+if [[ -z "$SM_NAME" || -z "$SM_TOKEN" || -z "$SM_REPORT_URL" ]]; then
+  cat <<'EOF'
+usage:
+  sudo bash install-agent-macos.sh <name> <token> <report-url>
+
+example:
+  sudo bash install-agent-macos.sh mac-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+EOF
+  exit 1
+fi
+
+if [[ $EUID -ne 0 ]]; then
+  echo "please run as root for launchd daemon installation" >&2
+  exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "Node.js 18+ and npm are required" >&2
+  exit 1
+fi
+
+NODE_BIN="$(command -v node)"
+NODE_MAJOR="$($NODE_BIN -p 'Number(process.versions.node.split(".")[0])')"
+if [[ "$NODE_MAJOR" -lt 18 ]]; then
+  echo "Node.js 18+ is required, current: $($NODE_BIN -v)" >&2
+  exit 1
+fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+echo "[servermonitor-agent] cloning $REPO_URL#$BRANCH"
+git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/servermonitor"
+
+mkdir -p "$(dirname "$INSTALL_DIR")"
+rm -rf "$INSTALL_DIR"
+cp -a "$TMP_DIR/servermonitor/agent" "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+npm install --omit=dev
+
+mkdir -p /var/log/servermonitor
+
+cat >"$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.servermonitor.agent</string>
+  <key>WorkingDirectory</key>
+  <string>${INSTALL_DIR}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${NODE_BIN}</string>
+    <string>${INSTALL_DIR}/agent.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SM_NAME</key>
+    <string>${SM_NAME}</string>
+    <key>SM_TOKEN</key>
+    <string>${SM_TOKEN}</string>
+    <key>SM_REPORT_URL</key>
+    <string>${SM_REPORT_URL}</string>
+    <key>SM_INTERVAL</key>
+    <string>${SM_INTERVAL}</string>
+    <key>SM_SLOW_INTERVAL</key>
+    <string>${SM_SLOW_INTERVAL}</string>
+    <key>SM_TIMEOUT</key>
+    <string>${SM_TIMEOUT}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/servermonitor/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/servermonitor/agent.err.log</string>
+</dict>
+</plist>
+EOF
+
+chown root:wheel "$PLIST"
+chmod 644 "$PLIST"
+launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap system "$PLIST"
+launchctl enable system/com.servermonitor.agent
+launchctl kickstart -k system/com.servermonitor.agent
+
+echo "[servermonitor-agent] installed to $INSTALL_DIR"
+echo "[servermonitor-agent] plist: $PLIST"
+echo "[servermonitor-agent] logs: tail -f /var/log/servermonitor/agent.log /var/log/servermonitor/agent.err.log"

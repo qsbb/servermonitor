@@ -2,6 +2,36 @@
 
 这是 `servermonitor` 的服务器侧采集程序。快速部署见上级目录的 `快速部署教程.md`，完整部署流程见上级目录的 `部署文档.md`。
 
+## 一键部署
+
+Linux systemd：
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) \
+  web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+```
+
+Linux Docker：
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) \
+  web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+```
+
+Windows 管理员 PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\install-agent-windows.ps1
+powershell -ExecutionPolicy Bypass -File $env:TEMP\install-agent-windows.ps1 -Name "win-01" -Token "sm_xxx" -ReportUrl "http://192.168.1.10:2536/servermonitor/report"
+```
+
+macOS launchd：
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) \
+  mac-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+```
+
 ## 依赖
 
 - Node.js 18+
@@ -10,12 +40,12 @@
 安装依赖：
 
 ```bash
-npm install
+npm install --omit=dev
 ```
 
-## 启动
+## 命令行启动
 
-### 一次性上传
+一次性上传：
 
 ```bash
 node agent.mjs \
@@ -25,7 +55,7 @@ node agent.mjs \
   --once
 ```
 
-### 持续运行
+持续运行：
 
 ```bash
 node agent.mjs \
@@ -36,19 +66,49 @@ node agent.mjs \
   --slow-interval 30
 ```
 
-## 常用参数
+## 环境变量启动
 
-- `--name`：服务器名，必须与 Yunzai 中注册的名称一致
-- `--token`：Yunzai 生成的上报 token
-- `--report-url`：Yunzai 上报地址
-- `--interval`：基础上传间隔，单位秒
-- `--slow-interval`：慢速采集间隔，单位秒
-- `--dry-run`：只输出快照，不上报
-- `--once`：采集一次并退出
+Docker、systemd、launchd、NSSM 都可以使用环境变量：
 
-## Linux 服务示例
+```bash
+export SM_NAME=web-01
+export SM_TOKEN=sm_xxx
+export SM_REPORT_URL=http://yunzai.example.com/servermonitor/report
+export SM_INTERVAL=10
+export SM_SLOW_INTERVAL=30
+node agent.mjs
+```
 
-可用 systemd、Docker 或 Supervisor 托管。示例：
+支持的环境变量：
+
+| 环境变量 | 对应参数 | 说明 |
+| --- | --- | --- |
+| `SM_NAME` | `--name` | 服务器名称 |
+| `SM_TOKEN` | `--token` | 上报 token |
+| `SM_REPORT_URL` | `--report-url` | Yunzai 上报地址 |
+| `SM_INTERVAL` | `--interval` | 基础上传间隔，秒 |
+| `SM_SLOW_INTERVAL` | `--slow-interval` | 慢速采集间隔，秒 |
+| `SM_TIMEOUT` | `--timeout` | 上传超时，毫秒 |
+| `SM_DRY_RUN` | `--dry-run` | 只输出快照 |
+| `SM_ONCE` | `--once` | 上传一次后退出 |
+
+## Docker Compose
+
+仓库根目录提供 `docker-compose.agent.yml` 和 `.env.agent.example`：
+
+```bash
+cp .env.agent.example .env
+# 编辑 .env 后启动
+docker compose --env-file .env -f docker-compose.agent.yml up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose -f docker-compose.agent.yml logs -f
+```
+
+## systemd 服务示例
 
 ```ini
 [Unit]
@@ -58,7 +118,10 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=/opt/servermonitor/agent
-ExecStart=/usr/bin/node /opt/servermonitor/agent/agent.mjs --name web-01 --token sm_xxx --report-url http://yunzai.example.com/servermonitor/report
+Environment=SM_NAME=web-01
+Environment=SM_TOKEN=sm_xxx
+Environment=SM_REPORT_URL=http://yunzai.example.com/servermonitor/report
+ExecStart=/usr/bin/node /opt/servermonitor/agent/agent.mjs
 Restart=always
 RestartSec=5
 
@@ -66,34 +129,15 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-## Windows
-
-建议使用 Windows Service 或 NSSM 托管：
+## Windows NSSM 示例
 
 ```powershell
-nssm install servermonitor-agent "C:\Program Files\nodejs\node.exe" "C:\servermonitor\agent\agent.mjs" --name web-01 --token sm_xxx --report-url http://yunzai.example.com/servermonitor/report
+nssm install servermonitor-agent "C:\Program Files\nodejs\node.exe" "C:\servermonitor\agent\agent.mjs"
+nssm set servermonitor-agent AppDirectory "C:\servermonitor\agent"
+nssm set servermonitor-agent AppEnvironmentExtra "SM_NAME=win-01" "SM_TOKEN=sm_xxx" "SM_REPORT_URL=http://yunzai.example.com/servermonitor/report"
+nssm start servermonitor-agent
 ```
 
-## macOS
+## macOS launchd
 
-建议使用 launchd 或 `plist` 托管。
-
-## Docker
-
-目录内提供了 `Dockerfile`，可直接构建：
-
-```bash
-docker build -t servermonitor-agent ./agent
-```
-
-运行时建议至少启用 `--network host`，宿主机指标采集更完整时还可以加 `--pid host`、挂载 `/proc` 和 `/sys`：
-
-```bash
-docker run --rm \
-  --network host \
-  --pid host \
-  -v /proc:/host/proc:ro \
-  -v /sys:/host/sys:ro \
-  servermonitor-agent \
-  node agent.mjs --name web-01 --token sm_xxx --report-url http://yunzai.example.com/servermonitor/report
-```
+一键脚本会生成 `/Library/LaunchDaemons/com.servermonitor.agent.plist`。手动 plist 示例见 `部署文档.md`。

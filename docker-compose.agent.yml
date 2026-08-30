@@ -1,0 +1,22 @@
+services:
+  servermonitor-agent:
+    build:
+      context: ./agent
+    image: servermonitor-agent:latest
+    container_name: servermonitor-agent
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    environment:
+      SM_NAME: ${SM_NAME:?set SM_NAME}
+      SM_TOKEN: ${SM_TOKEN:?set SM_TOKEN}
+      SM_REPORT_URL: ${SM_REPORT_URL:?set SM_REPORT_URL}
+      SM_INTERVAL: ${SM_INTERVAL:-10}
+      SM_SLOW_INTERVAL: ${SM_SLOW_INTERVAL:-30}
+      SM_TIMEOUT: ${SM_TIMEOUT:-5000}
+    volumes:
+      - /sys/class/thermal:/sys/class/thermal:ro
+      - /sys/class/powercap:/sys/class/powercap:ro
+      - /proc/net/dev:/proc/net/dev:ro
+    # NVIDIA GPU users can enable this when nvidia-container-toolkit is installed:
+    # gpus: all
