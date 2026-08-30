@@ -9,8 +9,19 @@ import { spawn } from "node:child_process"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
 
-const REPO_URL = process.env.REPO_URL || "https://github.com/qsbb/servermonitor.git"
+const REPO_URL_INPUT = process.env.REPO_URL || ""
+const DEFAULT_REPO_URL = "https://github.com/qsbb/servermonitor.git"
+const REPO_MIRRORS = process.env.REPO_MIRRORS || [
+  "https://github.com/qsbb/servermonitor.git",
+  "https://ghfast.top/https://github.com/qsbb/servermonitor.git",
+  "https://gh-proxy.com/https://github.com/qsbb/servermonitor.git",
+  "https://gitclone.com/github.com/qsbb/servermonitor.git",
+  "https://mirror.ghproxy.com/https://github.com/qsbb/servermonitor.git",
+].join(",")
+const AUTO_GIT_MIRROR = process.env.AUTO_GIT_MIRROR !== "0" && process.env.AUTO_GIT_MIRROR !== "false"
+const GIT_MIRROR_PROBE_TIMEOUT = Number(process.env.GIT_MIRROR_PROBE_TIMEOUT || 5)
 const BRANCH = process.env.BRANCH || "main"
+let REPO_URL = DEFAULT_REPO_URL
 const RAW_BASE = process.env.SM_INSTALL_BASE || "https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts"
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const isWin = process.platform === "win32"
@@ -38,6 +49,60 @@ function run(command, args = [], options = {}) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function probeGitMirror(url) {
+  return new Promise(resolve => {
+    const start = Date.now()
+    const child = spawn("git", ["ls-remote", "--heads", url, BRANCH], { stdio: "ignore" })
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      resolve(null)
+    }, GIT_MIRROR_PROBE_TIMEOUT * 1000)
+    child.on("error", () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
+    child.on("exit", code => {
+      clearTimeout(timer)
+      resolve(code === 0 ? Date.now() - start : null)
+    })
+  })
+}
+
+async function selectRepoUrl() {
+  if (REPO_URL_INPUT) {
+    REPO_URL = REPO_URL_INPUT
+    console.log(`[servermonitor] using configured REPO_URL=${REPO_URL}`)
+    return
+  }
+  if (!AUTO_GIT_MIRROR) {
+    REPO_URL = DEFAULT_REPO_URL
+    console.log(`[servermonitor] auto git mirror disabled, using REPO_URL=${REPO_URL}`)
+    return
+  }
+
+  let best = ""
+  let bestMs = Number.POSITIVE_INFINITY
+  for (const raw of REPO_MIRRORS.split(",")) {
+    const candidate = raw.trim()
+    if (!candidate) continue
+    console.log(`[servermonitor] testing git mirror: ${candidate}`)
+    const ms = await probeGitMirror(candidate)
+    if (ms == null) {
+      console.log(`[servermonitor] git mirror failed/timeout: ${candidate}`)
+      continue
+    }
+    console.log(`[servermonitor] git mirror ok: ${candidate} (${ms}ms)`)
+    if (ms < bestMs) {
+      best = candidate
+      bestMs = ms
+    }
+  }
+
+  REPO_URL = best || DEFAULT_REPO_URL
+  if (!best) console.log(`[servermonitor] all git mirror probes failed, fallback REPO_URL=${REPO_URL}`)
+  console.log(`[servermonitor] selected REPO_URL=${REPO_URL}`)
 }
 
 function commandExists(command) {
@@ -106,6 +171,7 @@ async function localOrDownloadedScript(name) {
 async function installPlugin(rl) {
   title("安装 Yunzai 插件")
   await requireCommand("git", "install git first")
+  await selectRepoUrl()
   const yunzaiDir = await prompt(rl, "TRSS-Yunzai 根目录", process.env.YUNZAI_DIR || "/path/to/Yunzai")
   const pluginDir = path.join(yunzaiDir, "plugins", "servermonitor")
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "servermonitor-plugin-"))

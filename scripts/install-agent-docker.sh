@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/qsbb/servermonitor.git}"
+REPO_URL_INPUT="${REPO_URL:-}"
+DEFAULT_REPO_URL="https://github.com/qsbb/servermonitor.git"
+REPO_URL="$DEFAULT_REPO_URL"
 BRANCH="${BRANCH:-main}"
+AUTO_GIT_MIRROR="${AUTO_GIT_MIRROR:-1}"
+GIT_MIRROR_PROBE_TIMEOUT="${GIT_MIRROR_PROBE_TIMEOUT:-5}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor-docker}"
 SM_NAME="${SM_NAME:-${1:-}}"
 SM_TOKEN="${SM_TOKEN:-${2:-}}"
@@ -17,6 +21,81 @@ fi
 SM_INTERVAL="${SM_INTERVAL:-10}"
 SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-30}"
 SM_TIMEOUT="${SM_TIMEOUT:-5000}"
+GIT_CLONE_ATTEMPTS="${GIT_CLONE_ATTEMPTS:-3}"
+GIT_CLONE_TIMEOUT="${GIT_CLONE_TIMEOUT:-300}"
+REPO_MIRRORS="${REPO_MIRRORS:-https://github.com/qsbb/servermonitor.git,https://ghfast.top/https://github.com/qsbb/servermonitor.git,https://gh-proxy.com/https://github.com/qsbb/servermonitor.git,https://gitclone.com/github.com/qsbb/servermonitor.git,https://mirror.ghproxy.com/https://github.com/qsbb/servermonitor.git}"
+
+probe_git_mirror() {
+  local url="$1" start end
+  start="$(now_ms)"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${GIT_MIRROR_PROBE_TIMEOUT}s" git ls-remote --heads "$url" "$BRANCH" >/dev/null 2>&1 || return 1
+  else
+    git ls-remote --heads "$url" "$BRANCH" >/dev/null 2>&1 || return 1
+  fi
+  end="$(now_ms)"
+  echo "$(( end - start ))"
+}
+
+select_repo_url() {
+  if [[ -n "$REPO_URL_INPUT" ]]; then
+    REPO_URL="$REPO_URL_INPUT"
+    echo "[servermonitor-agent] using configured REPO_URL=$REPO_URL"
+    return 0
+  fi
+  if [[ "$AUTO_GIT_MIRROR" == "0" || "$AUTO_GIT_MIRROR" == "false" ]]; then
+    REPO_URL="$DEFAULT_REPO_URL"
+    echo "[servermonitor-agent] auto git mirror disabled, using REPO_URL=$REPO_URL"
+    return 0
+  fi
+
+  local old_ifs candidate ms best best_ms
+  best=""
+  best_ms=999999999
+  old_ifs="$IFS"
+  IFS=','
+  for candidate in $REPO_MIRRORS; do
+    candidate="${candidate//[$'\t\r\n ']/}"
+    [[ -z "$candidate" ]] && continue
+    echo "[servermonitor-agent] testing git mirror: $candidate"
+    if ms="$(probe_git_mirror "$candidate")"; then
+      echo "[servermonitor-agent] git mirror ok: $candidate (${ms}ms)"
+      if (( ms < best_ms )); then
+        best="$candidate"
+        best_ms="$ms"
+      fi
+    else
+      echo "[servermonitor-agent] git mirror failed/timeout: $candidate"
+    fi
+  done
+  IFS="$old_ifs"
+
+  if [[ -n "$best" ]]; then
+    REPO_URL="$best"
+  else
+    REPO_URL="$DEFAULT_REPO_URL"
+    echo "[servermonitor-agent] all git mirror probes failed, fallback REPO_URL=$REPO_URL"
+  fi
+  echo "[servermonitor-agent] selected REPO_URL=$REPO_URL"
+}
+
+clone_repo() {
+  local dest="$1" attempt
+  select_repo_url
+  echo "[servermonitor-agent] cloning $REPO_URL#$BRANCH"
+  for attempt in $(seq 1 "$GIT_CLONE_ATTEMPTS"); do
+    rm -rf "$dest"
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${GIT_CLONE_TIMEOUT}s" git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest" && return 0
+    else
+      git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest" && return 0
+    fi
+    echo "[servermonitor-agent] clone attempt $attempt failed; retrying"
+    sleep 2
+  done
+  echo "[servermonitor-agent] clone failed after $GIT_CLONE_ATTEMPTS attempts" >&2
+  return 1
+}
 AUTO_NODE_IMAGE="${AUTO_NODE_IMAGE:-1}"
 NODE_IMAGE_PROBE_TIMEOUT="${NODE_IMAGE_PROBE_TIMEOUT:-8}"
 NODE_IMAGE_PRE_PULL="${NODE_IMAGE_PRE_PULL:-1}"
@@ -102,6 +181,12 @@ example:
   sudo bash install-agent-docker.sh web-01 http://192.168.1.10:2536/servermonitor/report
   sudo bash install-agent-docker.sh web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
 
+github mirror env:
+  AUTO_GIT_MIRROR=1
+  REPO_MIRRORS=https://github.com/...,https://ghfast.top/https://github.com/...
+  GIT_MIRROR_PROBE_TIMEOUT=5
+  GIT_CLONE_ATTEMPTS=3
+
 docker image mirror env:
   AUTO_NODE_IMAGE=1
   NODE_IMAGE=node:18-bookworm-slim
@@ -126,8 +211,7 @@ fi
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "[servermonitor-agent] cloning $REPO_URL#$BRANCH"
-git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/servermonitor"
+clone_repo "$TMP_DIR/servermonitor"
 
 rm -rf "$INSTALL_DIR"
 mkdir -p "$(dirname "$INSTALL_DIR")"

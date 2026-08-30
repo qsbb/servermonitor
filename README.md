@@ -168,6 +168,19 @@ Windows 可运行：
 | Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
 
+GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试：
+
+```bash
+REPO_MIRRORS="https://github.com/qsbb/servermonitor.git,https://ghfast.top/https://github.com/qsbb/servermonitor.git" \
+  sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report
+```
+
+关闭 GitHub 镜像测速：
+
+```bash
+AUTO_GIT_MIRROR=0 sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.sh)
+```
+
 Docker 版安装器会自动测速多个 Node 基础镜像地址，选择最快的 `NODE_IMAGE` 写入 `.env` 后再构建。可用环境变量覆盖：
 
 ```bash
