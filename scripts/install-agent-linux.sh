@@ -8,16 +8,25 @@ SERVICE_NAME="${SERVICE_NAME:-servermonitor-agent}"
 SM_NAME="${SM_NAME:-${1:-}}"
 SM_TOKEN="${SM_TOKEN:-${2:-}}"
 SM_REPORT_URL="${SM_REPORT_URL:-${3:-}}"
+if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
+  SM_REPORT_URL="$SM_TOKEN"
+  SM_TOKEN=""
+fi
+if [[ -z "$SM_TOKEN" ]]; then
+  SM_TOKEN="sm_$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))' 2>/dev/null || openssl rand -hex 16)"
+fi
 SM_INTERVAL="${SM_INTERVAL:-10}"
 SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-30}"
 SM_TIMEOUT="${SM_TIMEOUT:-5000}"
 
-if [[ -z "$SM_NAME" || -z "$SM_TOKEN" || -z "$SM_REPORT_URL" ]]; then
+if [[ -z "$SM_NAME" || -z "$SM_REPORT_URL" ]]; then
   cat <<'EOF'
 usage:
-  sudo bash install-agent-linux.sh <name> <token> <report-url>
+  sudo bash install-agent-linux.sh <name> [token] <report-url>
+  sudo bash install-agent-linux.sh <name> <report-url>   # 自动生成 token
 
 example:
+  sudo bash install-agent-linux.sh web-01 http://192.168.1.10:2536/servermonitor/report
   sudo bash install-agent-linux.sh web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
 
 env overrides:
@@ -92,3 +101,5 @@ echo "[servermonitor-agent] installed to $INSTALL_DIR"
 echo "[servermonitor-agent] service: $SERVICE_NAME"
 echo "[servermonitor-agent] status: systemctl status $SERVICE_NAME"
 echo "[servermonitor-agent] logs: journalctl -u $SERVICE_NAME -f"
+echo "[servermonitor-agent] token: $SM_TOKEN"
+echo "[servermonitor-agent] bind in Yunzai private chat: #服务器状态绑定 $SM_NAME $SM_TOKEN"

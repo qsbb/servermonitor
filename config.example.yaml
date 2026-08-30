@@ -1,5 +1,6 @@
 admins: []
 servers: []
+shared_token: "sm_change_me_or_generate_with_command"
 page_size: 8
 offline_timeout: 30
 public_status: true

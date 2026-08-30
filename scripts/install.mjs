@@ -2,6 +2,7 @@
 import fs from "node:fs/promises"
 import fssync from "node:fs"
 import os from "node:os"
+import crypto from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
@@ -18,6 +19,10 @@ const isLinux = process.platform === "linux"
 
 function title(text) {
   console.log(`\n=== ${text} ===`)
+}
+
+function makeToken() {
+  return `sm_${crypto.randomBytes(16).toString("hex")}`
 }
 
 function run(command, args = [], options = {}) {
@@ -138,7 +143,12 @@ async function installPlugin(rl) {
 async function installAgent(mode, rl) {
   title("安装服务器 agent")
   const name = await prompt(rl, "服务器名称", process.env.SM_NAME || (isWin ? "win-01" : isMac ? "mac-01" : "web-01"))
-  const token = await prompt(rl, "上报 token", process.env.SM_TOKEN || "sm_xxx")
+  let token = await prompt(rl, "上报 token（留空则在本机生成，之后到 Yunzai 私聊绑定）", process.env.SM_TOKEN || "")
+  if (!token) {
+    token = makeToken()
+    console.log(`已生成本机 token：${token}`)
+    console.log(`稍后在 Yunzai 私聊发送：#服务器状态绑定 ${name} ${token}`)
+  }
   const reportUrl = await buildReportUrl(rl)
 
   console.log("\n端口说明：servermonitor 复用 TRSS-Yunzai 的 HTTP 服务端口，只新增 /servermonitor/report 路径。")
@@ -193,7 +203,12 @@ async function printCommands(mode, rl) {
   }
 
   const name = await prompt(rl, "服务器名称", isWin ? "win-01" : isMac ? "mac-01" : "web-01")
-  const token = await prompt(rl, "上报 token", "sm_xxx")
+  let token = await prompt(rl, "上报 token（留空则生成一个新 token）", "")
+  let tokenGenerated = false
+  if (!token) {
+    token = makeToken()
+    tokenGenerated = true
+  }
   const reportUrl = await buildReportUrl(rl)
 
   const map = {
@@ -203,6 +218,10 @@ async function printCommands(mode, rl) {
     windows: `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1\npowershell -ExecutionPolicy Bypass -File $env:TEMP\\install-agent-windows.ps1 -Name "${name}" -Token "${token}" -ReportUrl "${reportUrl}"`,
   }
   console.log(`\n${map[mode]}`)
+  if (tokenGenerated && mode !== "plugin") {
+    console.log(`\n绑定命令，复制到 Yunzai 主人私聊：`)
+    console.log(`#服务器状态绑定 ${name} ${token}`)
+  }
 }
 
 async function main() {

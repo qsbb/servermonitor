@@ -8,29 +8,37 @@ Linux systemd：
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) \
-  web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+  web-01 http://192.168.1.10:2536/servermonitor/report
 ```
 
 Linux Docker：
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) \
-  web-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+  web-01 http://192.168.1.10:2536/servermonitor/report
 ```
 
 Windows 管理员 PowerShell：
 
 ```powershell
 irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\install-agent-windows.ps1
-powershell -ExecutionPolicy Bypass -File $env:TEMP\install-agent-windows.ps1 -Name "win-01" -Token "sm_xxx" -ReportUrl "http://192.168.1.10:2536/servermonitor/report"
+powershell -ExecutionPolicy Bypass -File $env:TEMP\install-agent-windows.ps1 -Name "win-01" -ReportUrl "http://192.168.1.10:2536/servermonitor/report"
 ```
 
 macOS launchd：
 
 ```bash
 sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) \
-  mac-01 sm_xxx http://192.168.1.10:2536/servermonitor/report
+  mac-01 http://192.168.1.10:2536/servermonitor/report
 ```
+
+上面这些命令省略 token 时，脚本会在被监控机器生成 token，并输出：
+
+```text
+#服务器状态绑定 <名称> <token>
+```
+
+把它复制到 Yunzai 主人私聊里发送即可完成绑定。
 
 ## 依赖
 

@@ -12,6 +12,7 @@ export const SNAPSHOT_FILE = path.join(DATA_DIR, "snapshots.json")
 const DEFAULT_CONFIG = {
   admins: [],
   servers: [],
+  shared_token: "",
   page_size: 8,
   offline_timeout: 30,
   public_status: true,
@@ -186,6 +187,7 @@ function stringifyConfig(config) {
     lines.push("servers: []")
   }
 
+  lines.push(`shared_token: ${yamlString(data.shared_token)}`)
   lines.push(`page_size: ${data.page_size}`)
   lines.push(`offline_timeout: ${data.offline_timeout}`)
   lines.push(`public_status: ${data.public_status}`)
@@ -228,6 +230,7 @@ export function normalizeConfig(input = {}) {
     ? config.servers.map(normalizeServer).filter(Boolean)
     : []
 
+  base.shared_token = String(config.shared_token || "").trim() || makeToken()
   base.page_size = Math.max(1, toInt(config.page_size, base.page_size))
   base.offline_timeout = Math.max(5, toInt(config.offline_timeout, base.offline_timeout))
   base.public_status = toBool(config.public_status, base.public_status)
@@ -255,19 +258,23 @@ async function ensureStorage() {
   try {
     await fs.access(CONFIG_FILE)
   } catch {
-    await fs.writeFile(CONFIG_FILE, stringifyConfig(DEFAULT_CONFIG), "utf8")
+    await fs.writeFile(CONFIG_FILE, stringifyConfig({ ...DEFAULT_CONFIG, shared_token: makeToken() }), "utf8")
   }
 }
 
 export async function loadConfig(force = false) {
   await ensureStorage()
-  const stat = await fs.stat(CONFIG_FILE)
+  let stat = await fs.stat(CONFIG_FILE)
   if (!force && cache.loaded && cache.mtimeMs === stat.mtimeMs && cache.data) {
     return clone(cache.data)
   }
   const raw = await fs.readFile(CONFIG_FILE, "utf8")
   const parsed = parseConfigText(raw)
   const data = normalizeConfig(parsed)
+  if (!String(parsed.shared_token || "").trim()) {
+    await fs.writeFile(CONFIG_FILE, stringifyConfig(data), "utf8")
+    stat = await fs.stat(CONFIG_FILE)
+  }
   cache.loaded = true
   cache.mtimeMs = stat.mtimeMs
   cache.data = data

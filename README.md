@@ -7,7 +7,9 @@
 - `#服务器状态`：查看状态图；默认包含 Yunzai 本机，并按名称展示已注册服务器
 - `#服务器状态 <名称>`：查看单台服务器详情
 - `#服务器状态列表`：列出所有已注册服务器
-- `#服务器状态添加 <名称>`：主人私聊登记服务器并生成 token
+- `#服务器状态令牌`：主人私聊查看共享上报 token
+- `#服务器状态添加 <名称>`：主人私聊登记服务器并由 Yunzai 生成 token
+- `#服务器状态绑定 <名称> <token>`：主人私聊绑定服务器侧生成的 token
 - `#服务器状态删除 <名称>`：主人删除已登记服务器
 - Linux / Docker / Windows / macOS 一键部署 agent
 
@@ -56,8 +58,44 @@ ls plugins/servermonitor/index.js
 | `#服务器状态 <名称>` | 查看单台服务器 |
 | `#服务器状态列表` | 列出注册服务器 |
 | `#服务器状态检查` | 查看插件是否加载、接口、配置和渲染状态 |
-| `#服务器状态添加 <名称>` | 主人私聊添加服务器 |
+| `#服务器状态令牌` | 主人私聊查看共享上报 token，一台机器一个名字即可自动注册 |
+| `#服务器状态添加 <名称>` | 主人私聊手动添加服务器并由 Yunzai 生成 token |
+| `#服务器状态绑定 <名称> <token>` | 主人私聊绑定服务器侧生成的 token |
 | `#服务器状态删除 <名称>` | 主人删除服务器 |
+
+## 上报 token 是什么
+
+上报 token 是 agent 上传数据时放在请求头 `X-SM-Token` 里的密钥，用来证明这台机器是你配置的监控节点。
+
+有两种简单用法：
+
+### A. Yunzai 生成共享 token
+
+主人私聊机器人发送：
+
+```text
+#服务器状态令牌
+```
+
+拿到共享 token 后，所有服务器部署 agent 时都填这个 token，并给每台机器设置不同名称，例如 `web-01`、`win-01`、`mac-01`。第一次上报时插件会自动注册服务器。
+
+### B. 被监控机器生成 token，再回到 Yunzai 绑定
+
+部署 agent 时 token 可以直接留空，安装器会在被监控机器生成一个 token，并输出绑定命令：
+
+```text
+#服务器状态绑定 web-01 sm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+把这条命令复制到 Yunzai 主人私聊里发送即可。之后该机器 agent 会用这个 token 上报。
+
+也就是说，最简单流程是：
+
+```text
+安装插件 → 在服务器运行一键安装器 → token 留空自动生成 → 复制绑定命令到 Yunzai 私聊
+```
+
+手动 `#服务器状态添加 <名称>` 仍然保留，适合提前由 Yunzai 给每台服务器生成独立 token。
 
 ## 上报协议
 
@@ -89,6 +127,7 @@ ls plugins/servermonitor/index.js
 常用配置：
 
 ```yaml
+shared_token: "sm_xxx" # 共享上报 token；首次启动自动生成，也可用 #服务器状态令牌 查看
 public_status: true   # true 时任何人发送 #服务器状态 都会响应；false 时仅 master/admins 可查看
 include_local: true   # true 时 #服务器状态 默认包含 Yunzai 本机卡片
 page_size: 8          # 每张图显示服务器数量
@@ -122,10 +161,10 @@ Windows 可运行：
 | 交互式一键安装器 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.sh)` |
 | Windows 交互式一键安装器 | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.ps1 \| iex` |
 | 安装 Yunzai 插件 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-plugin.sh) /path/to/Yunzai` |
-| Linux systemd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
-| Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+| Linux systemd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 http://YUNZAI:2536/servermonitor/report` |
+| Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report` |
 | Windows agent | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1` |
-| macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 sm_xxx http://YUNZAI:2536/servermonitor/report` |
+| macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
 
 ## 端口说明
 

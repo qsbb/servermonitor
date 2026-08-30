@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory=$true)][string]$Name,
-  [Parameter(Mandatory=$true)][string]$Token,
+  [string]$Token = "",
   [Parameter(Mandatory=$true)][string]$ReportUrl,
   [string]$InstallDir = "C:\servermonitor\agent",
   [string]$ServiceName = "servermonitor-agent",
@@ -26,6 +26,12 @@ $Npm = Require-Command "npm"
 $NodeMajor = & $Node -p "Number(process.versions.node.split('.')[0])"
 if ([int]$NodeMajor -lt 18) {
   throw "Node.js 18+ is required, current: $(& $Node -v)"
+}
+
+if (-not $Token) {
+  [byte[]]$Bytes = New-Object byte[] 16
+  [Security.Cryptography.RandomNumberGenerator]::Fill($Bytes)
+  $Token = "sm_" + ([BitConverter]::ToString($Bytes) -replace "-", "").ToLower()
 }
 
 $Temp = Join-Path $env:TEMP ("servermonitor-" + [guid]::NewGuid().ToString("N"))
@@ -81,6 +87,8 @@ try {
   Write-Host "[servermonitor-agent] service: $ServiceName"
   Write-Host "[servermonitor-agent] status: nssm status $ServiceName"
   Write-Host "[servermonitor-agent] logs: C:\servermonitor\agent.log and C:\servermonitor\agent.err.log"
+  Write-Host "[servermonitor-agent] token: $Token"
+  Write-Host "[servermonitor-agent] bind in Yunzai private chat: #服务器状态绑定 $Name $Token"
 } finally {
   if (Test-Path $Temp) { Remove-Item -Recurse -Force $Temp }
 }

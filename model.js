@@ -116,6 +116,11 @@ function resolveConfigByToken(token) {
   return state.configIndexByToken.get(String(token)) ?? null
 }
 
+function sanitizeServerName(value) {
+  const raw = strOrNull(value) || ""
+  return raw.replace(/\s+/g, "_").slice(0, 32)
+}
+
 function sanitizeSnapshot(body) {
   const os = body.os && typeof body.os === "object" ? body.os : {}
   const cpu = body.cpu && typeof body.cpu === "object" ? body.cpu : {}
@@ -616,6 +621,36 @@ export async function addServer(name, note = "") {
   return config.servers.find(item => item.name === cleanName)
 }
 
+export async function bindServerToken(name, token, note = "设备侧生成 token") {
+  const cleanName = sanitizeServerName(name)
+  const cleanToken = String(token || "").trim()
+  const cleanNote = String(note || "").trim() || "设备侧生成 token"
+  if (!cleanName) throw new Error("服务器名不能为空")
+  if (!cleanToken || cleanToken.length < 8) throw new Error("token格式错误")
+
+  const config = await updateConfig(current => {
+    const conflict = current.servers.find(item => item.name !== cleanName && item.token === cleanToken)
+    if (conflict) throw new Error(`token已绑定服务器【${conflict.name}】`)
+    const existing = current.servers.find(item => item.name === cleanName)
+    if (existing) {
+      existing.token = cleanToken
+      existing.note = cleanNote
+      existing.boundAt = Date.now()
+    } else {
+      current.servers.push({
+        name: cleanName,
+        token: cleanToken,
+        note: cleanNote,
+        createdAt: Date.now(),
+      })
+    }
+    return current
+  })
+  await refreshConfig()
+  ensureRecord(cleanName)
+  return config.servers.find(item => item.name === cleanName)
+}
+
 export async function removeServer(name) {
   const cleanName = String(name || "").trim()
   if (!cleanName) throw new Error("服务器名不能为空")
@@ -633,18 +668,42 @@ export async function removeServer(name) {
 export async function handleReport(req, res) {
   try {
     await bootstrap()
-    await refreshConfig()
+    let config = await refreshConfig()
     const token = String(req.get("X-SM-Token") || "").trim()
-    const server = resolveConfigByToken(token)
-    if (!server) return res.status(401).json({ ok: false, msg: "token invalid" })
     const body = req.body
     if (!body || typeof body !== "object" || body.v !== 1) {
       return res.status(422).json({ ok: false, msg: "bad schema" })
     }
+
+    let server = resolveConfigByToken(token)
+    const isSharedToken = token && token === String(config.shared_token || "").trim()
+    if (!server && isSharedToken) {
+      const autoName = sanitizeServerName(body.name || body.os?.hostname)
+      if (!autoName) return res.status(422).json({ ok: false, msg: "missing name" })
+      server = resolveConfigServer(autoName)
+      if (!server) {
+        config = await updateConfig(current => {
+          if (!current.servers.some(item => item.name === autoName)) {
+            current.servers.push({
+              name: autoName,
+              token: makeToken(),
+              note: "共享 token 自动注册",
+              createdAt: Date.now(),
+            })
+          }
+          return current
+        })
+        await refreshConfig()
+        server = config.servers.find(item => item.name === autoName) || resolveConfigServer(autoName)
+      }
+    }
+
+    if (!server) return res.status(401).json({ ok: false, msg: "token invalid" })
+
     const snap = sanitizeSnapshot(body)
     snap.name = server.name
     updateRecordFromSnapshot(server.name, snap, Date.now())
-    return res.json({ ok: true })
+    return res.json({ ok: true, name: server.name, auto: isSharedToken })
   } catch (err) {
     ;(globalThis.logger || console).error("[servermonitor] report failed", err)
     return res.status(500).json({ ok: false, msg: "internal error" })

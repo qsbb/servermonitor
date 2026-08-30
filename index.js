@@ -9,6 +9,7 @@ import {
   buildTextFallback,
   listServersText,
   addServer,
+  bindServerToken,
   removeServer,
   scanOffline as scanOfflineModel,
   persist as persistModel,
@@ -40,9 +41,11 @@ export class servermonitor extends plugin {
       ],
       rule: [
         { reg: "^#?(服务器状态检查|servermonitor检查)$", fnc: "check", log: false },
+        { reg: "^#?服务器状态(令牌|token|TOKEN)$", fnc: "token", permission: "master", log: false },
         { reg: "^#?服务器状态帮助$", fnc: "help", log: false },
         { reg: "^#?服务器状态列表$", fnc: "list", log: false },
         { reg: "^#?服务器状态添加\\s+(\\S{1,32})(?:\\s+(.+))?$", fnc: "add", permission: "master", log: false },
+        { reg: "^#?服务器状态绑定\\s+(\\S{1,32})\\s+(\\S{8,128})(?:\\s+(.+))?$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态删除\\s+(\\S{1,32})$", fnc: "del", permission: "master", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
@@ -146,7 +149,9 @@ export class servermonitor extends plugin {
       `#服务器状态 <名称>     查看单台服务器`,
       `#服务器状态列表        列出已注册服务器`,
       `#服务器状态检查        查看插件加载和配置`,
+      `#服务器状态令牌        查看共享上报 token`,
       `#服务器状态添加 <名称>  主人私聊添加服务器`,
+      `#服务器状态绑定 <名称> <token>  绑定设备侧生成token`,
       `#服务器状态删除 <名称>  主人删除服务器`,
     ].join("\n"))
   }
@@ -168,7 +173,26 @@ export class servermonitor extends plugin {
       `当前展示：${entries.map(i => i.name).join("、") || "空"}`,
       `public_status：${config.public_status ? "true" : "false"}`,
       `include_local：${config.include_local ? "true" : "false"}`,
+      `shared_token：${config.shared_token ? "已生成" : "未生成"}`,
       `runtime.render：${this.e?.runtime?.render ? "可用" : "未检测到"}`,
+    ].join("\n"))
+  }
+
+  async token() {
+    if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行：#服务器状态令牌")
+    const config = await loadConfig(true)
+    const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536").replace(/\/+$/, "")
+    const reportUrl = `${baseUrl}${getReportUrlPath()}`
+    return this.reply([
+      `【${PLUGIN_NAME}】共享上报 token`,
+      `token：${config.shared_token}`,
+      `上报地址：${reportUrl}`,
+      `说明：agent 使用这个 token 上报时，会按 --name / SM_NAME 自动注册服务器。`,
+      `另一种方式：部署机器先生成 token，再私聊执行 #服务器状态绑定 <名称> <token>。`,
+      `Linux一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 ${config.shared_token} ${reportUrl}`,
+      `Docker一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 ${config.shared_token} ${reportUrl}`,
+      `macOS一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 ${config.shared_token} ${reportUrl}`,
+      `Windows：运行 install.ps1 后填入 win-01、上方 token、上方上报地址`,
     ].join("\n"))
   }
 
@@ -205,6 +229,28 @@ export class servermonitor extends plugin {
       ].filter(Boolean).join("\n"))
     } catch (err) {
       return this.reply(`添加失败：${err.message || err}`)
+    }
+  }
+
+  async bind() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?服务器状态绑定\s+(\S{1,32})\s+(\S{8,128})(?:\s+(.+))?$/)
+    const name = args?.[0]?.trim()
+    const token = args?.[1]?.trim()
+    const note = args?.[2]?.trim() || "设备侧生成 token"
+    if (!name || !token) return false
+    if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行绑定命令")
+
+    try {
+      const item = await bindServerToken(name, token, note)
+      return this.reply([
+        `已绑定服务器【${item.name}】`,
+        `token：${item.token}`,
+        `备注：${item.note || "无"}`,
+        `现在等待该机器 agent 上报即可；可发送 #服务器状态 查看。`,
+      ].join("\n"))
+    } catch (err) {
+      return this.reply(`绑定失败：${err.message || err}`)
     }
   }
 
