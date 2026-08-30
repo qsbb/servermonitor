@@ -394,6 +394,24 @@
   overflow-wrap: anywhere;
 }
 
+/* ---------- 网络分行 ---------- */
+.sb-net-lines {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.sb-net-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- 磁盘行 ---------- */
 .sb-disk {
   padding: 8px 0;

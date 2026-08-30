@@ -467,7 +467,7 @@ function formatDiskText(disks) {
       const mount = item.mount || "?"
       return `${mount} ${used}/${total} ${pct}`
     })
-  return normalizeLineText(lines, 2)
+  return normalizeLineText(lines, 4)
 }
 
 function formatGpuText(gpu) {
@@ -571,9 +571,15 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     ? `${formatSizeGB(memUsed)} / ${formatSizeGB(memTotal)}${memPct === null ? "" : ` (${formatPercent(memPct)})`}`
     : "—"
 
-  const netText = snap
-    ? `${formatRateMB(snap.net?.rxSec)} ↓ / ${formatRateMB(snap.net?.txSec)} ↑ · 累计 ${formatSizeGB(snap.net?.rxTotal)} ↓ / ${formatSizeGB(snap.net?.txTotal)} ↑`
-    : "—"
+  const netLines = snap
+    ? [
+        `↓ ${formatRateMB(snap.net?.rxSec)}`,
+        `↑ ${formatRateMB(snap.net?.txSec)}`,
+        `累计 ↓ ${formatSizeGB(snap.net?.rxTotal)}`,
+        `累计 ↑ ${formatSizeGB(snap.net?.txTotal)}`,
+      ]
+    : []
+  const netText = netLines.length ? netLines.join(" · ") : "—"
 
   const powerParts = []
   if (snap?.cpu?.power !== null && snap?.cpu?.power !== undefined) powerParts.push(`CPU ${formatPower(snap.cpu.power)}`)
@@ -604,7 +610,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
           }
         })
         .sort((a, b) => b.pct - a.pct)
-        .slice(0, 4)
+        .slice(0, 8)
     : []
   const gpuView = snap ? buildGpuView(snap) : { hasGpu: false, gpuEmptyText: "—", gpus: [] }
   const osText = snap
@@ -650,6 +656,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     diskText,
     disks: diskView,
     netText,
+    netLines,
     powerText,
     loadText,
     hasGpu: gpuView.hasGpu,

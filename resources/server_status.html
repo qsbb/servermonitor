@@ -71,7 +71,13 @@
         <div class="sb-split">
           <div class="sb-cell">
             <span class="sb-label">网络</span>
-            <div class="sb-note">{{s.netText || '—'}}</div>
+            {{if s.netLines && s.netLines.length}}
+              <div class="sb-net-lines">
+                {{each s.netLines line}}<div class="sb-net-line">{{line}}</div>{{/each}}
+              </div>
+            {{else}}
+              <div class="sb-note">{{s.netText || '—'}}</div>
+            {{/if}}
           </div>
           <div class="sb-cell">
             <span class="sb-label">负载 / 功耗</span>

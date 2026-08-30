@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.13"
+const AGENT_VERSION = "0.1.14"
 
 const THIS_FILE = fileURLToPath(import.meta.url)
 const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
@@ -203,6 +203,79 @@ async function collectGpuFallback() {
   }))
 }
 
+async function readLinuxCpuTempFromSysfs() {
+  const candidates = []
+  const readTemp = async file => {
+    const raw = await fs.readFile(file, "utf8").catch(() => "")
+    const value = Number(String(raw).trim())
+    if (!Number.isFinite(value) || value <= 0) return null
+    const celsius = value > 1000 ? value / 1000 : value
+    return celsius >= -20 && celsius <= 150 ? celsius : null
+  }
+
+  const readLabel = async dir => {
+    for (const name of ["name", "temp1_label", "temp2_label", "temp3_label"]) {
+      const raw = await fs.readFile(path.join(dir, name), "utf8").catch(() => "")
+      if (raw.trim()) return raw.trim().toLowerCase()
+    }
+    return ""
+  }
+
+  const hwmonDir = "/sys/class/hwmon"
+  const hwmons = await safe(() => fs.readdir(hwmonDir, { withFileTypes: true }), [])
+  for (const dirent of hwmons) {
+    const dir = path.join(hwmonDir, dirent.name)
+    const label = await readLabel(dir)
+    const isCpuLike = /coretemp|k10temp|zenpower|cpu_thermal|x86_pkg_temp|acpitz|cpu/.test(label)
+    const entries = await safe(() => fs.readdir(dir), [])
+    for (const entry of entries) {
+      if (!/^temp\d+_input$/.test(entry)) continue
+      const value = await readTemp(path.join(dir, entry))
+      if (value === null) continue
+      candidates.push({ value, label, isCpuLike })
+    }
+  }
+
+  const thermalDir = "/sys/class/thermal"
+  const zones = await safe(() => fs.readdir(thermalDir, { withFileTypes: true }), [])
+  for (const dirent of zones) {
+    if (!/^thermal_zone\d+$/.test(dirent.name)) continue
+    const dir = path.join(thermalDir, dirent.name)
+    const label = await readLabel(dir)
+    const isCpuLike = /cpu|coretemp|k10temp|zenpower|x86_pkg_temp/.test(label)
+    const value = await readTemp(path.join(dir, "temp"))
+    if (value !== null) candidates.push({ value, label, isCpuLike })
+  }
+
+  if (!candidates.length) return null
+  const cpuLike = candidates.filter(item => item.isCpuLike)
+  const pool = cpuLike.length ? cpuLike : candidates
+  return Math.max(...pool.map(item => item.value))
+}
+
+async function collectCpuTempWindows() {
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -ExpandProperty CurrentTemperature)",
+      ],
+      { timeout: 3000 },
+    )
+    const values = String(stdout || "")
+      .split(/\r?\n/)
+      .map(line => Number(line.trim()))
+      .filter(value => Number.isFinite(value) && value > 0)
+    const celsius = Math.max(...values) / 10 - 273.15
+    return Number.isFinite(celsius) && celsius > -20 && celsius < 150 ? celsius : null
+  } catch {
+    return null
+  }
+}
+
 async function collectCpuTemp() {
   const temp = await safe(() => si.cpuTemperature(), null)
   const main = num(temp?.main)
@@ -211,6 +284,8 @@ async function collectCpuTemp() {
   if (max !== null && max > 0) return max
   const cores = Array.isArray(temp?.cores) ? temp.cores.map(num).filter(v => v !== null && v > 0) : []
   if (cores.length) return Math.max(...cores)
+  if (process.platform === "linux") return await readLinuxCpuTempFromSysfs()
+  if (process.platform === "win32") return await collectCpuTempWindows()
   return null
 }
 
