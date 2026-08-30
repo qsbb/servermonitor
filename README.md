@@ -7,6 +7,7 @@
 - `#服务器状态`：查看状态图；默认包含 Yunzai 本机，并按名称展示已注册服务器
 - `#服务器状态 <名称>`：查看单台服务器详情
 - `#服务器状态列表`：列出所有已注册服务器
+- `#服务器状态待绑定`：主人私聊查看已上报但未绑定的 token
 - `#服务器状态令牌`：主人私聊查看共享上报 token
 - `#服务器状态添加 <名称>`：主人私聊登记服务器并由 Yunzai 生成 token
 - `#服务器状态绑定 <token>`：主人私聊接受服务器侧生成的 token，名称自动取子服务器上报名称
@@ -58,6 +59,7 @@ ls plugins/servermonitor/index.js
 | `#服务器状态` | 查看总览图片；默认包含本机并显示各注册服务器 |
 | `#服务器状态 <名称>` | 查看单台服务器 |
 | `#服务器状态列表` | 列出注册服务器 |
+| `#服务器状态待绑定` | 主人查看已上报但未绑定的 token |
 | `#服务器状态检查` | 查看插件是否加载、接口、配置和渲染状态 |
 | `#服务器状态令牌` | 主人私聊查看共享上报 token，一台机器一个名字即可自动注册 |
 | `#服务器状态添加 <名称>` | 主人私聊手动添加服务器并由 Yunzai 生成 token |
@@ -169,6 +171,8 @@ Windows 可运行：
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
 
 GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试：
+
+agent 安装脚本会自动检测本机已有的 systemd / Docker / NSSM / launchd 安装；检测到时进入更新模式，保留原 `SM_NAME`、`SM_TOKEN`、`SM_REPORT_URL`，只更新代码并重启服务。直接重跑同一条一键命令即可更新。
 
 ```bash
 REPO_MIRRORS="https://github.com/qsbb/servermonitor.git,https://ghfast.top/https://github.com/qsbb/servermonitor.git" \

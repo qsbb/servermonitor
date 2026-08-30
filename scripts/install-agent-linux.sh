@@ -94,6 +94,14 @@ clone_repo() {
 }
 INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor/agent}"
 SERVICE_NAME="${SERVICE_NAME:-servermonitor-agent}"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+svc_env_value() {
+  local key="$1"
+  [[ -f "$SERVICE_FILE" ]] || return 0
+  sed -n "s/^Environment=${key}=//p" "$SERVICE_FILE" | tail -n 1
+}
+
 SM_NAME="${SM_NAME:-${1:-}}"
 SM_TOKEN="${SM_TOKEN:-${2:-}}"
 SM_REPORT_URL="${SM_REPORT_URL:-${3:-}}"
@@ -101,6 +109,19 @@ if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
   SM_REPORT_URL="$SM_TOKEN"
   SM_TOKEN=""
 fi
+
+UPDATE_MODE=0
+if [[ -f "$SERVICE_FILE" && -f "$INSTALL_DIR/agent.mjs" ]]; then
+  UPDATE_MODE=1
+  echo "[servermonitor-agent] existing installation detected: $SERVICE_FILE"
+  [[ -z "$SM_NAME" ]] && SM_NAME="$(svc_env_value SM_NAME)"
+  [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(svc_env_value SM_TOKEN)"
+  [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(svc_env_value SM_REPORT_URL)"
+  SM_INTERVAL="${SM_INTERVAL:-$(svc_env_value SM_INTERVAL)}"
+  SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-$(svc_env_value SM_SLOW_INTERVAL)}"
+  SM_TIMEOUT="${SM_TIMEOUT:-$(svc_env_value SM_TIMEOUT)}"
+fi
+
 if [[ -z "$SM_TOKEN" ]]; then
   SM_TOKEN="sm_$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))' 2>/dev/null || openssl rand -hex 16)"
 fi
@@ -158,6 +179,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
+fi
 mkdir -p "$(dirname "$INSTALL_DIR")"
 rm -rf "$INSTALL_DIR"
 cp -a "$TMP_DIR/servermonitor/agent" "$INSTALL_DIR"
@@ -191,7 +216,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
-echo "[servermonitor-agent] installed to $INSTALL_DIR"
+echo "[servermonitor-agent] $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] service: $SERVICE_NAME"
 echo "[servermonitor-agent] status: systemctl status $SERVICE_NAME"
 echo "[servermonitor-agent] logs: journalctl -u $SERVICE_NAME -f"

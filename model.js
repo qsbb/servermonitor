@@ -626,6 +626,18 @@ export async function buildTextFallback(entries) {
   return lines.join("\n")
 }
 
+export async function listPendingTokens() {
+  await bootstrap()
+  return [...state.pendingReports.values()]
+    .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+    .map(item => ({
+      name: item.name,
+      token: item.token,
+      tokenTail: String(item.token).slice(-6),
+      ageSec: Math.max(0, Math.floor((Date.now() - (item.lastSeen || Date.now())) / 1000)),
+    }))
+}
+
 export async function listServersText() {
   await bootstrap()
   const config = await refreshConfig()

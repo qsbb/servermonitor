@@ -1,7 +1,7 @@
 param(
-  [Parameter(Mandatory=$true)][string]$Name,
+  [string]$Name = "",
   [string]$Token = "",
-  [Parameter(Mandatory=$true)][string]$ReportUrl,
+  [string]$ReportUrl = "",
   [string]$InstallDir = "C:\servermonitor\agent",
   [string]$ServiceName = "servermonitor-agent",
   [string]$RepoUrl = "https://github.com/qsbb/servermonitor.git",
@@ -19,13 +19,54 @@ function Require-Command($Command) {
   return $cmd.Source
 }
 
+function Get-NssmExtraValue($NssmExe, $Service, $Key, $Existing) {
+  if ($Existing -and $Existing.Trim() -ne "") { return $Existing }
+  $nssmGet = Get-Command $NssmExe -ErrorAction SilentlyContinue
+  if (-not $nssmGet) { return $Existing }
+  try {
+    $raw = & $NssmExe get $Service $Key 2>$null
+    if ($null -ne $raw) {
+      $text = ($raw -join "`n").Trim()
+      if ($text) { return $text }
+    }
+  } catch {}
+  return $Existing
+}
+
 $Git = Require-Command "git"
 $Node = Require-Command "node"
 $Npm = Require-Command "npm"
 
+$NssmProbe = Get-Command "nssm" -ErrorAction SilentlyContinue
+$UpdateMode = $false
+if ($NssmProbe -and (Test-Path (Join-Path $InstallDir "agent.mjs"))) {
+  $NssmProbeExe = $NssmProbe.Source
+  $currentStatus = $null
+  try { $currentStatus = & $NssmProbeExe status $ServiceName 2>$null } catch {}
+  if ($LASTEXITCODE -eq 0 -or $currentStatus) {
+    $UpdateMode = $true
+    Write-Host "[servermonitor-agent] existing installation detected: $InstallDir"
+    $Name = Get-NssmExtraValue $NssmProbeExe $ServiceName "AppEnvironmentExtra" $Name
+    if ($Name -match "(?m)^SM_NAME=(.*)$") { $Name = $Matches[1].Trim() }
+    $ReportUrl = Get-NssmExtraValue $NssmProbeExe $ServiceName "AppEnvironmentExtra" $ReportUrl
+    if ($ReportUrl -match "(?m)^SM_REPORT_URL=(.*)$") { $ReportUrl = $Matches[1].Trim() }
+    $Token = Get-NssmExtraValue $NssmProbeExe $ServiceName "AppEnvironmentExtra" $Token
+    if ($Token -match "(?m)^SM_TOKEN=(.*)$") { $Token = $Matches[1].Trim() }
+  }
+}
+
 $NodeMajor = & $Node -p "Number(process.versions.node.split('.')[0])"
 if ([int]$NodeMajor -lt 18) {
   throw "Node.js 18+ is required, current: $(& $Node -v)"
+}
+
+if (-not $Name -or -not $ReportUrl) {
+  Write-Host @"
+usage:
+  powershell -ExecutionPolicy Bypass -File install-agent-windows.ps1 -Name <name> [-Token <token>] -ReportUrl <url>
+  Existing installations are detected and updated automatically.
+"@
+  throw "-Name and -ReportUrl are required for a new installation"
 }
 
 if (-not $Token) {
@@ -83,7 +124,7 @@ try {
   & $Nssm set $ServiceName AppStderr "C:\servermonitor\agent.err.log"
   & $Nssm start $ServiceName
 
-  Write-Host "[servermonitor-agent] installed to $InstallDir"
+  Write-Host "[servermonitor-agent] $(if ($UpdateMode) { "updated" } else { "installed" }) to $InstallDir"
   Write-Host "[servermonitor-agent] service: $ServiceName"
   Write-Host "[servermonitor-agent] status: nssm status $ServiceName"
   Write-Host "[servermonitor-agent] logs: C:\servermonitor\agent.log and C:\servermonitor\agent.err.log"

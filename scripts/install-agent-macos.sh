@@ -94,6 +94,15 @@ clone_repo() {
 }
 INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor/agent}"
 PLIST="${PLIST:-/Library/LaunchDaemons/com.servermonitor.agent.plist}"
+
+plist_env_value() {
+  local key="$1"
+  [[ -f "$PLIST" ]] || return 0
+  awk -v key="$key" '
+    $0 ~ "<key>" key "</key>" { getline; gsub(/^[[:space:]]*<string>|<\/string>[[:space:]]*$/, ""); print; exit }
+  ' "$PLIST" 2>/dev/null
+}
+
 SM_NAME="${SM_NAME:-${1:-}}"
 SM_TOKEN="${SM_TOKEN:-${2:-}}"
 SM_REPORT_URL="${SM_REPORT_URL:-${3:-}}"
@@ -101,6 +110,19 @@ if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
   SM_REPORT_URL="$SM_TOKEN"
   SM_TOKEN=""
 fi
+
+UPDATE_MODE=0
+if [[ -f "$PLIST" && -f "$INSTALL_DIR/agent.mjs" ]]; then
+  UPDATE_MODE=1
+  echo "[servermonitor-agent] existing installation detected: $PLIST"
+  [[ -z "$SM_NAME" ]] && SM_NAME="$(plist_env_value SM_NAME)"
+  [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(plist_env_value SM_TOKEN)"
+  [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(plist_env_value SM_REPORT_URL)"
+  SM_INTERVAL="${SM_INTERVAL:-$(plist_env_value SM_INTERVAL)}"
+  SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-$(plist_env_value SM_SLOW_INTERVAL)}"
+  SM_TIMEOUT="${SM_TIMEOUT:-$(plist_env_value SM_TIMEOUT)}"
+fi
+
 if [[ -z "$SM_TOKEN" ]]; then
   SM_TOKEN="sm_$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))' 2>/dev/null || openssl rand -hex 16)"
 fi
@@ -153,6 +175,10 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
+fi
 mkdir -p "$(dirname "$INSTALL_DIR")"
 rm -rf "$INSTALL_DIR"
 cp -a "$TMP_DIR/servermonitor/agent" "$INSTALL_DIR"
@@ -209,7 +235,7 @@ launchctl bootstrap system "$PLIST"
 launchctl enable system/com.servermonitor.agent
 launchctl kickstart -k system/com.servermonitor.agent
 
-echo "[servermonitor-agent] installed to $INSTALL_DIR"
+echo "[servermonitor-agent] $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] plist: $PLIST"
 echo "[servermonitor-agent] logs: tail -f /var/log/servermonitor/agent.log /var/log/servermonitor/agent.err.log"
 echo "[servermonitor-agent] token: $SM_TOKEN"

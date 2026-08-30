@@ -15,6 +15,26 @@ if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
   SM_REPORT_URL="$SM_TOKEN"
   SM_TOKEN=""
 fi
+
+env_value() {
+  local key="$1"
+  [[ -f "$INSTALL_DIR/.env" ]] || return 0
+  sed -n "s/^${key}=//p" "$INSTALL_DIR/.env" | tail -n 1
+}
+
+UPDATE_MODE=0
+if [[ -f "$INSTALL_DIR/.env" && -f "$INSTALL_DIR/docker-compose.agent.yml" ]]; then
+  UPDATE_MODE=1
+  echo "[servermonitor-agent] existing docker installation detected: $INSTALL_DIR"
+  [[ -z "$SM_NAME" ]] && SM_NAME="$(env_value SM_NAME)"
+  [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(env_value SM_TOKEN)"
+  [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(env_value SM_REPORT_URL)"
+  SM_INTERVAL="${SM_INTERVAL:-$(env_value SM_INTERVAL)}"
+  SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-$(env_value SM_SLOW_INTERVAL)}"
+  SM_TIMEOUT="${SM_TIMEOUT:-$(env_value SM_TIMEOUT)}"
+  NODE_IMAGE="${NODE_IMAGE:-$(env_value NODE_IMAGE)}"
+fi
+
 if [[ -z "$SM_TOKEN" ]]; then
   SM_TOKEN="sm_$(node -e 'console.log(require("crypto").randomBytes(16).toString("hex"))' 2>/dev/null || openssl rand -hex 16)"
 fi
@@ -213,9 +233,18 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
-rm -rf "$INSTALL_DIR"
-mkdir -p "$(dirname "$INSTALL_DIR")"
-cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  echo "[servermonitor-agent] updating docker deployment in $INSTALL_DIR"
+  cp -a "$INSTALL_DIR/.env" "$TMP_DIR/.env.backup"
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$(dirname "$INSTALL_DIR")"
+  cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
+  cp -a "$TMP_DIR/.env.backup" "$INSTALL_DIR/.env"
+else
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$(dirname "$INSTALL_DIR")"
+  cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
+fi
 
 select_node_image
 
@@ -236,7 +265,7 @@ if [[ "$NODE_IMAGE_PRE_PULL" != "0" && "$NODE_IMAGE_PRE_PULL" != "false" ]]; the
 fi
 docker compose --env-file .env -f docker-compose.agent.yml up -d --build
 
-echo "[servermonitor-agent] docker deployment installed to $INSTALL_DIR"
+echo "[servermonitor-agent] docker deployment $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] logs: cd $INSTALL_DIR && docker compose -f docker-compose.agent.yml logs -f"
 echo "[servermonitor-agent] token: $SM_TOKEN"
 echo "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $SM_TOKEN"

@@ -12,6 +12,7 @@ import {
   bindServerToken,
   renameServer,
   removeServer,
+  listPendingTokens,
   scanOffline as scanOfflineModel,
   persist as persistModel,
   makeAgentCommand,
@@ -45,6 +46,7 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态(令牌|token|TOKEN)$", fnc: "token", permission: "master", log: false },
         { reg: "^#?服务器状态帮助$", fnc: "help", log: false },
         { reg: "^#?服务器状态列表$", fnc: "list", log: false },
+        { reg: "^#?服务器状态待绑定$", fnc: "pending", permission: "master", log: false },
         { reg: "^#?服务器状态添加\\s+(\\S{1,32})(?:\\s+(.+))?$", fnc: "add", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{1,32})\\s+(\\S{8,128})(?:\\s+(.+))?$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{8,128})$", fnc: "bind", permission: "master", log: false },
@@ -143,6 +145,20 @@ export class servermonitor extends plugin {
   async list() {
     if (!(await this._canViewStatus())) return this._replyNoPermission()
     return this.reply(await listServersText())
+  }
+
+  async pending() {
+    const items = await listPendingTokens()
+    if (!items.length) {
+      return this.reply([
+        `当前没有待绑定的 token`,
+        `请在子服务器启动 agent，收到一次上报后再发送：#服务器状态绑定 <token>`,
+      ].join("\n"))
+    }
+    return this.reply([
+      `【servermonitor】待绑定 token`,
+      ...items.map(item => `${item.name} · ...${item.tokenTail} · ${item.ageSec}秒前上报\n#服务器状态绑定 ${item.token}`),
+    ].join("\n"))
   }
 
   async help() {

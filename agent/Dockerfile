@@ -9,4 +9,4 @@ COPY package.json ./
 RUN npm install --omit=dev
 COPY agent.mjs ./
 
-CMD ["node", "agent.mjs", "--help"]
+CMD ["node", "agent.mjs"]
