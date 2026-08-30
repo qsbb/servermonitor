@@ -147,7 +147,7 @@ async function installAgent(mode, rl) {
   if (!token) {
     token = makeToken()
     console.log(`已生成本机 token：${token}`)
-    console.log(`稍后在 Yunzai 私聊发送：#服务器状态绑定 ${name} ${token}`)
+    console.log(`等待一次上传日志后，在 Yunzai 私聊发送：#服务器状态绑定 ${token}`)
   }
   const reportUrl = await buildReportUrl(rl)
 
@@ -220,7 +220,7 @@ async function printCommands(mode, rl) {
   console.log(`\n${map[mode]}`)
   if (tokenGenerated && mode !== "plugin") {
     console.log(`\n绑定命令，复制到 Yunzai 主人私聊：`)
-    console.log(`#服务器状态绑定 ${name} ${token}`)
+    console.log(`#服务器状态绑定 ${token}`)
   }
 }
 

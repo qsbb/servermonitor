@@ -88,7 +88,7 @@ try {
   Write-Host "[servermonitor-agent] status: nssm status $ServiceName"
   Write-Host "[servermonitor-agent] logs: C:\servermonitor\agent.log and C:\servermonitor\agent.err.log"
   Write-Host "[servermonitor-agent] token: $Token"
-  Write-Host "[servermonitor-agent] bind in Yunzai private chat: #服务器状态绑定 $Name $Token"
+  Write-Host "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $Token"
 } finally {
   if (Test-Path $Temp) { Remove-Item -Recurse -Force $Temp }
 }

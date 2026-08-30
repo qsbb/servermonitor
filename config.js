@@ -8,6 +8,7 @@ export const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const CONFIG_FILE = path.join(ROOT_DIR, "config.yaml")
 export const DATA_DIR = path.join(ROOT_DIR, "data")
 export const SNAPSHOT_FILE = path.join(DATA_DIR, "snapshots.json")
+export const PENDING_FILE = path.join(DATA_DIR, "pending.json")
 
 const DEFAULT_CONFIG = {
   admins: [],

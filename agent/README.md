@@ -35,10 +35,10 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main
 上面这些命令省略 token 时，脚本会在被监控机器生成 token，并输出：
 
 ```text
-#服务器状态绑定 <名称> <token>
+#服务器状态绑定 <token>
 ```
 
-把它复制到 Yunzai 主人私聊里发送即可完成绑定。
+把它复制到 Yunzai 主人私聊里发送即可完成绑定，服务器名称会从 agent 上报的 `SM_NAME` / `--name` 自动获取；后续可用 `#服务器状态改名 <旧名> <新名>` 修改显示名称。
 
 ## 依赖
 

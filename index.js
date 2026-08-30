@@ -10,6 +10,7 @@ import {
   listServersText,
   addServer,
   bindServerToken,
+  renameServer,
   removeServer,
   scanOffline as scanOfflineModel,
   persist as persistModel,
@@ -46,6 +47,8 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态列表$", fnc: "list", log: false },
         { reg: "^#?服务器状态添加\\s+(\\S{1,32})(?:\\s+(.+))?$", fnc: "add", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{1,32})\\s+(\\S{8,128})(?:\\s+(.+))?$", fnc: "bind", permission: "master", log: false },
+        { reg: "^#?服务器状态绑定\\s+(\\S{8,128})$", fnc: "bind", permission: "master", log: false },
+        { reg: "^#?服务器状态改名\\s+(\\S{1,32})\\s+(\\S{1,32})$", fnc: "rename", permission: "master", log: false },
         { reg: "^#?服务器状态删除\\s+(\\S{1,32})$", fnc: "del", permission: "master", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
@@ -151,7 +154,8 @@ export class servermonitor extends plugin {
       `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态令牌        查看共享上报 token`,
       `#服务器状态添加 <名称>  主人私聊添加服务器`,
-      `#服务器状态绑定 <名称> <token>  绑定设备侧生成token`,
+      `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
+      `#服务器状态改名 <旧名> <新名>  修改服务器名称`,
       `#服务器状态删除 <名称>  主人删除服务器`,
     ].join("\n"))
   }
@@ -234,23 +238,39 @@ export class servermonitor extends plugin {
 
   async bind() {
     const text = getMessageText(this.e)
-    const args = parseCommandArg(text, /^#?服务器状态绑定\s+(\S{1,32})\s+(\S{8,128})(?:\s+(.+))?$/)
-    const name = args?.[0]?.trim()
-    const token = args?.[1]?.trim()
-    const note = args?.[2]?.trim() || "设备侧生成 token"
-    if (!name || !token) return false
+    const named = parseCommandArg(text, /^#?服务器状态绑定\s+(\S{1,32})\s+(\S{8,128})(?:\s+(.+))?$/)
+    const tokenOnly = parseCommandArg(text, /^#?服务器状态绑定\s+(\S{8,128})$/)
+    const name = named?.[0]?.trim() || ""
+    const token = named?.[1]?.trim() || tokenOnly?.[0]?.trim() || ""
+    const note = named?.[2]?.trim() || "设备侧生成 token"
+    if (!token) return false
     if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行绑定命令")
 
     try {
-      const item = await bindServerToken(name, token, note)
+      const item = name ? await bindServerToken(name, token, note) : await bindServerToken(token)
       return this.reply([
-        `已绑定服务器【${item.name}】`,
+        item.alreadyBound ? `token 已绑定服务器【${item.name}】` : `已绑定服务器【${item.name}】`,
         `token：${item.token}`,
         `备注：${item.note || "无"}`,
-        `现在等待该机器 agent 上报即可；可发送 #服务器状态 查看。`,
+        `可发送 #服务器状态 查看。`,
       ].join("\n"))
     } catch (err) {
       return this.reply(`绑定失败：${err.message || err}`)
+    }
+  }
+
+  async rename() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?服务器状态改名\s+(\S{1,32})\s+(\S{1,32})$/)
+    const oldName = args?.[0]?.trim()
+    const newName = args?.[1]?.trim()
+    if (!oldName || !newName) return false
+
+    try {
+      const item = await renameServer(oldName, newName)
+      return this.reply(`已改名：${oldName} → ${item.name}`)
+    } catch (err) {
+      return this.reply(`改名失败：${err.message || err}`)
     }
   }
 

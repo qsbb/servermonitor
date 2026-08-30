@@ -69,4 +69,4 @@ docker compose --env-file .env -f docker-compose.agent.yml up -d --build
 echo "[servermonitor-agent] docker deployment installed to $INSTALL_DIR"
 echo "[servermonitor-agent] logs: cd $INSTALL_DIR && docker compose -f docker-compose.agent.yml logs -f"
 echo "[servermonitor-agent] token: $SM_TOKEN"
-echo "[servermonitor-agent] bind in Yunzai private chat: #服务器状态绑定 $SM_NAME $SM_TOKEN"
+echo "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $SM_TOKEN"

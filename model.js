@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import { collectLocalSnapshot } from "./local.js"
-import { DATA_DIR, SNAPSHOT_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
+import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
 
 const STATE_KEY = "__servermonitor_state__"
 const state = globalThis[STATE_KEY] ??= {
@@ -9,6 +9,7 @@ const state = globalThis[STATE_KEY] ??= {
   configIndexByName: new Map(),
   configIndexByToken: new Map(),
   records: new Map(),
+  pendingReports: new Map(),
   bootstrapped: false,
   persistedLoaded: false,
   lastPersistAt: 0,
@@ -78,10 +79,49 @@ async function hydratePersisted() {
   } catch {}
 }
 
+async function hydratePending() {
+  try {
+    const raw = await fs.readFile(PENDING_FILE, "utf8")
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed?.pending)) {
+      for (const item of parsed.pending) {
+        if (!item?.token || !item?.name) continue
+        state.pendingReports.set(String(item.token), {
+          token: String(item.token),
+          name: sanitizeServerName(item.name),
+          snap: item.snap ?? null,
+          lastSeen: Number(item.lastSeen) || Date.now(),
+        })
+      }
+    }
+  } catch {}
+}
+
+async function persistPending() {
+  await fs.mkdir(DATA_DIR, { recursive: true })
+  const payload = {
+    v: 1,
+    savedAt: Date.now(),
+    pending: [...state.pendingReports.values()],
+  }
+  await fs.writeFile(PENDING_FILE, JSON.stringify(payload, null, 2), "utf8")
+}
+
+async function savePendingReport(token, snap, receivedAt = Date.now()) {
+  const cleanToken = String(token || "").trim()
+  const cleanName = sanitizeServerName(snap?.name || snap?.os?.hostname)
+  if (!cleanToken || !cleanName) return null
+  const item = { token: cleanToken, name: cleanName, snap, lastSeen: receivedAt }
+  state.pendingReports.set(cleanToken, item)
+  await persistPending()
+  return item
+}
+
 async function bootstrap() {
   if (state.bootstrapped) return
   state.bootstrapped = true
   await hydratePersisted()
+  await hydratePending()
   await hydrateConfig()
 }
 
@@ -621,9 +661,22 @@ export async function addServer(name, note = "") {
   return config.servers.find(item => item.name === cleanName)
 }
 
-export async function bindServerToken(name, token, note = "设备侧生成 token") {
-  const cleanName = sanitizeServerName(name)
-  const cleanToken = String(token || "").trim()
+export async function bindServerToken(nameOrToken, token = "", note = "设备侧生成 token") {
+  await bootstrap()
+  let cleanName = sanitizeServerName(nameOrToken)
+  let cleanToken = String(token || "").trim()
+  let pending = null
+
+  if (!cleanToken) {
+    cleanToken = String(nameOrToken || "").trim()
+    if (!cleanToken || cleanToken.length < 8) throw new Error("token格式错误")
+    const already = resolveConfigByToken(cleanToken)
+    if (already) return { ...already, alreadyBound: true }
+    pending = state.pendingReports.get(cleanToken) || null
+    if (!pending) throw new Error("未收到该 token 的服务器上报，请先在子服务器启动 agent，或使用 #服务器状态绑定 <名称> <token>")
+    cleanName = sanitizeServerName(pending.name)
+  }
+
   const cleanNote = String(note || "").trim() || "设备侧生成 token"
   if (!cleanName) throw new Error("服务器名不能为空")
   if (!cleanToken || cleanToken.length < 8) throw new Error("token格式错误")
@@ -648,10 +701,45 @@ export async function bindServerToken(name, token, note = "设备侧生成 token
   })
   await refreshConfig()
   ensureRecord(cleanName)
+
+  if (pending?.snap) {
+    pending.snap.name = cleanName
+    updateRecordFromSnapshot(cleanName, pending.snap, pending.lastSeen || Date.now())
+    state.pendingReports.delete(cleanToken)
+    await persistPending()
+  }
+
   return config.servers.find(item => item.name === cleanName)
 }
 
+export async function renameServer(oldName, newName) {
+  await bootstrap()
+  const cleanOld = String(oldName || "").trim()
+  const cleanNew = sanitizeServerName(newName)
+  if (!cleanOld || !cleanNew) throw new Error("服务器名不能为空")
+  if (cleanOld === cleanNew) throw new Error("新旧名称相同")
+
+  const record = state.records.get(cleanOld)
+  const config = await updateConfig(current => {
+    const item = current.servers.find(server => server.name === cleanOld)
+    if (!item) throw new Error(`未找到服务器【${cleanOld}】`)
+    if (current.servers.some(server => server.name === cleanNew)) throw new Error(`服务器【${cleanNew}】已存在`)
+    item.name = cleanNew
+    item.renamedAt = Date.now()
+    return current
+  })
+
+  if (record) {
+    state.records.delete(cleanOld)
+    if (record.snap) record.snap.name = cleanNew
+    state.records.set(cleanNew, record)
+  }
+  await refreshConfig()
+  return config.servers.find(item => item.name === cleanNew)
+}
+
 export async function removeServer(name) {
+  await bootstrap()
   const cleanName = String(name || "").trim()
   if (!cleanName) throw new Error("服务器名不能为空")
   const config = await updateConfig(current => {
@@ -698,9 +786,20 @@ export async function handleReport(req, res) {
       }
     }
 
-    if (!server) return res.status(401).json({ ok: false, msg: "token invalid" })
-
     const snap = sanitizeSnapshot(body)
+    if (!server) {
+      const pending = await savePendingReport(token, snap, Date.now())
+      if (pending) {
+        return res.status(202).json({
+          ok: true,
+          pending: true,
+          name: pending.name,
+          bind: `#服务器状态绑定 ${token}`,
+        })
+      }
+      return res.status(401).json({ ok: false, msg: "token invalid" })
+    }
+
     snap.name = server.name
     updateRecordFromSnapshot(server.name, snap, Date.now())
     return res.json({ ok: true, name: server.name, auto: isSharedToken })
