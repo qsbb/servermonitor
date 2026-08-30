@@ -16,3 +16,4 @@ Thumbs.db
 core.*
 .cache/
 design/
+.github/workflows/build-exe.yml
