@@ -2,7 +2,7 @@
   "name": "servermonitor-agent",
   "private": true,
   "type": "module",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "servermonitor agent for host metric reporting",
   "engines": {
     "node": ">=18"

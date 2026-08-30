@@ -206,8 +206,151 @@ async function installPlugin(rl) {
   console.log("重启 TRSS-Yunzai 后发送：#服务器状态检查")
 }
 
+async function runCapture(command, args, timeoutMs = 3000) {
+  return new Promise(resolve => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "ignore"] })
+    let out = ""
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL")
+      resolve(out)
+    }, timeoutMs)
+    child.stdout.on("data", chunk => { out += String(chunk) })
+    child.on("error", () => {
+      clearTimeout(timer)
+      resolve(out)
+    })
+    child.on("exit", () => {
+      clearTimeout(timer)
+      resolve(out)
+    })
+  })
+}
+
+function parseKeyValueText(text) {
+  const values = {}
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+    if (match) values[match[1]] = match[2].trim()
+  }
+  return values
+}
+
+function parseSystemdEnvironment(text) {
+  const values = {}
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*Environment=([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+    if (match) values[match[1]] = match[2].trim()
+  }
+  return values
+}
+
+function parsePlistEnvironment(text) {
+  const values = {}
+  const source = String(text || "")
+  for (const key of ["SM_NAME", "SM_TOKEN", "SM_REPORT_URL", "SM_INTERVAL", "SM_SLOW_INTERVAL", "SM_TIMEOUT"]) {
+    const match = source.match(new RegExp(`<key>${key}</key>\\s*<string>([\\s\\S]*?)</string>`))
+    if (match) values[key] = match[1].trim()
+  }
+  return values
+}
+
+async function detectExistingAgent(mode) {
+  if (mode === "linux-systemd") {
+    const serviceFile = "/etc/systemd/system/servermonitor-agent.service"
+    const installDir = process.env.INSTALL_DIR || "/opt/servermonitor/agent"
+    if (!fssync.existsSync(serviceFile) || !fssync.existsSync(path.join(installDir, "agent.mjs"))) return null
+    try {
+      const env = parseSystemdEnvironment(await fs.readFile(serviceFile, "utf8"))
+      return { kind: "Linux systemd", installDir, values: env }
+    } catch { return null }
+  }
+
+  if (mode === "linux-docker") {
+    const installDir = process.env.INSTALL_DIR || "/opt/servermonitor-docker"
+    if (!fssync.existsSync(path.join(installDir, ".env")) || !fssync.existsSync(path.join(installDir, "docker-compose.agent.yml"))) return null
+    try {
+      const env = parseKeyValueText(await fs.readFile(path.join(installDir, ".env"), "utf8"))
+      return { kind: "Linux Docker Compose", installDir, values: env }
+    } catch { return null }
+  }
+
+  if (mode === "macos") {
+    const plist = "/Library/LaunchDaemons/com.servermonitor.agent.plist"
+    const installDir = process.env.INSTALL_DIR || "/opt/servermonitor/agent"
+    if (!fssync.existsSync(plist) || !fssync.existsSync(path.join(installDir, "agent.mjs"))) return null
+    try {
+      const env = parsePlistEnvironment(await fs.readFile(plist, "utf8"))
+      return { kind: "macOS launchd", installDir, values: env }
+    } catch { return null }
+  }
+
+  if (mode === "windows") {
+    const installDir = process.env.INSTALL_DIR || "C:\\servermonitor\\agent"
+    const serviceName = process.env.SERVICE_NAME || "servermonitor-agent"
+    if (!fssync.existsSync(path.join(installDir, "agent.mjs"))) return null
+    const nssm = await commandExists("nssm") ? "nssm" : null
+    if (!nssm) return null
+    try {
+      const raw = await runCapture(nssm, ["get", serviceName, "AppEnvironmentExtra"], 3000)
+      const env = parseKeyValueText(raw)
+      return { kind: "Windows NSSM", installDir, values: env }
+    } catch { return null }
+  }
+
+  return null
+}
+
+function maskToken(value) {
+  const token = String(value || "")
+  if (!token) return ""
+  if (token.length <= 10) return token
+  return `${token.slice(0, 6)}...${token.slice(-6)}`
+}
+
 async function installAgent(mode, rl) {
   title("安装服务器 agent")
+  const existing = await detectExistingAgent(mode)
+
+  if (existing) {
+    const values = existing.values || {}
+    console.log(`检测到已有安装：${existing.kind} · ${existing.installDir}`)
+    if (values.SM_NAME) console.log(`名称：${values.SM_NAME}`)
+    if (values.SM_REPORT_URL) console.log(`上报地址：${values.SM_REPORT_URL}`)
+    if (values.SM_TOKEN) console.log(`token：${maskToken(values.SM_TOKEN)}`)
+
+    const updateChoice = await choose(rl, "如何处理已有安装", ["更新并保留现有配置（推荐）", "重新配置"], 0)
+    console.log("\n端口说明：servermonitor 复用 TRSS-Yunzai 的 HTTP 服务端口，只新增 /servermonitor/report 路径。")
+
+    if (updateChoice === 0) {
+      if (mode === "linux-systemd") {
+        const script = await localOrDownloadedScript("install-agent-linux.sh")
+        const cmd = process.getuid?.() === 0 ? "bash" : "sudo"
+        const args = process.getuid?.() === 0 ? [script] : ["bash", script]
+        await run(cmd, args)
+        return
+      }
+      if (mode === "linux-docker") {
+        const script = await localOrDownloadedScript("install-agent-docker.sh")
+        const cmd = process.getuid?.() === 0 ? "bash" : "sudo"
+        const args = process.getuid?.() === 0 ? [script] : ["bash", script]
+        await run(cmd, args)
+        return
+      }
+      if (mode === "macos") {
+        const script = await localOrDownloadedScript("install-agent-macos.sh")
+        const cmd = process.getuid?.() === 0 ? "bash" : "sudo"
+        const args = process.getuid?.() === 0 ? [script] : ["bash", script]
+        await run(cmd, args)
+        return
+      }
+      if (mode === "windows") {
+        const script = await localOrDownloadedScript("install-agent-windows.ps1")
+        await run("powershell", ["-ExecutionPolicy", "Bypass", "-File", script])
+        return
+      }
+    }
+  }
+
   const name = await prompt(rl, "服务器名称", process.env.SM_NAME || (isWin ? "win-01" : isMac ? "mac-01" : "web-01"))
   let token = await prompt(rl, "上报 token（留空则在本机生成，之后到 Yunzai 私聊绑定）", process.env.SM_TOKEN || "")
   if (!token) {
