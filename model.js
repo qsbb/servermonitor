@@ -766,10 +766,12 @@ export async function removeServer(name) {
 }
 
 export async function handleReport(req, res) {
+  const log = globalThis.logger || console
   try {
     await bootstrap()
     let config = await refreshConfig()
     const token = String(req.get("X-SM-Token") || "").trim()
+    const tokenTail = token ? token.slice(-6) : ""
     const body = req.body
     if (!body || typeof body !== "object" || body.v !== 1) {
       return res.status(422).json({ ok: false, msg: "bad schema" })
@@ -802,6 +804,7 @@ export async function handleReport(req, res) {
     if (!server) {
       const pending = await savePendingReport(token, snap, Date.now())
       if (pending) {
+        log.info?.(`[servermonitor] report pending saved: name=${pending.name} token=...${tokenTail}`)
         return res.status(202).json({
           ok: true,
           pending: true,
@@ -809,11 +812,13 @@ export async function handleReport(req, res) {
           bind: `#服务器状态绑定 ${token}`,
         })
       }
+      log.warn?.(`[servermonitor] report rejected: missing token/name token=...${tokenTail}`)
       return res.status(401).json({ ok: false, msg: "token invalid" })
     }
 
     snap.name = server.name
     updateRecordFromSnapshot(server.name, snap, Date.now())
+    log.info?.(`[servermonitor] report accepted: name=${server.name} token=...${tokenTail}${isSharedToken ? " shared" : ""}`)
     return res.json({ ok: true, name: server.name, auto: isSharedToken })
   } catch (err) {
     ;(globalThis.logger || console).error("[servermonitor] report failed", err)

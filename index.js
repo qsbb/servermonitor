@@ -180,6 +180,7 @@ export class servermonitor extends plugin {
     const routeReady = initServerMonitorRoutes()
     const config = await loadConfig()
     const entries = await getEntries().catch(() => [])
+    const pendingItems = await listPendingTokens().catch(() => [])
     const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536").replace(/\/+$/, "")
     const reportUrl = `${baseUrl}${getReportUrlPath()}`
     return this.reply([
@@ -190,6 +191,7 @@ export class servermonitor extends plugin {
       `配置文件：${CONFIG_FILE}`,
       `数据目录：${DATA_DIR}`,
       `注册服务器：${config.servers?.length || 0} 台`,
+      `待绑定token：${pendingItems.length} 个`,
       `当前展示：${entries.map(i => i.name).join("、") || "空"}`,
       `public_status：${config.public_status ? "true" : "false"}`,
       `include_local：${config.include_local ? "true" : "false"}`,
