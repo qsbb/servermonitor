@@ -32,7 +32,7 @@
   --text-strong: #f4f6fa;
   --text: #ccd2de;
   --text-dim: #98a0b3;
-  --text-faint: #646c80;
+  --text-faint: #8a93a8;
 
   /* ---- 表面 ---- */
   --panel: rgba(24, 27, 35, 0.72);
@@ -119,8 +119,7 @@
 
 .sb-list.sb-cols-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, 1fr);
-  align-items: stretch;
+  align-items: start;
   gap: 12px;
 }
 
@@ -167,7 +166,7 @@
 
 .is-offline .sb-section,
 .is-offline .sb-meta {
-  opacity: 0.62;
+  opacity: 0.8;
 }
 
 .is-offline .sb-name {
@@ -438,9 +437,7 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .sb-disk-pct {
@@ -526,9 +523,7 @@
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .sb-gpu-pct {
@@ -605,7 +600,7 @@
   --text-strong: #10162a;
   --text: #2a3247;
   --text-dim: #4d5878;
-  --text-faint: #7d87a4;
+  --text-faint: #66708c;
   --panel: rgba(255, 255, 255, 0.78);
   --panel-border: rgba(16, 22, 42, 0.1);
   --divider: rgba(16, 22, 42, 0.08);

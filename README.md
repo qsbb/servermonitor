@@ -8,7 +8,7 @@
 - 状态卡片为深色玻璃拟态风格，并按数量自适应布局：≤3 台单列，≥4 台双列网格
 - `#服务器状态 <名称>`：查看单台服务器详情
 - `#服务器状态列表`：列出所有已注册服务器
-- `#服务器状态待绑定`：主人私聊查看已上报但未绑定的 token
+- `#服务器状态待绑定`：主人私聊查看已上报但未绑定的 token（群聊中会拒绝执行）
 - `#服务器状态令牌`：主人私聊查看共享上报 token
 - `#服务器状态添加 <名称>`：主人私聊登记服务器并由 Yunzai 生成 token
 - `#服务器状态绑定 <token>`：主人私聊接受服务器侧生成的 token，名称自动取子服务器上报名称
@@ -32,8 +32,10 @@
 
 ```bash
 cd /path/to/Yunzai
-rm -rf plugins/servermonitor
+# 首次安装
 git clone https://github.com/qsbb/servermonitor.git plugins/servermonitor
+# 更新已有安装（保留 config.yaml 和 data/）
+cd plugins/servermonitor && git pull --ff-only
 ```
 
 确认入口文件存在：
@@ -60,7 +62,7 @@ ls plugins/servermonitor/index.js
 | `#服务器状态` | 查看总览图片；默认包含本机并显示各注册服务器 |
 | `#服务器状态 <名称>` | 查看单台服务器 |
 | `#服务器状态列表` | 列出注册服务器 |
-| `#服务器状态待绑定` | 主人查看已上报但未绑定的 token |
+| `#服务器状态待绑定` | 主人私聊查看已上报但未绑定的 token |
 | `#服务器状态检查` | 查看插件是否加载、接口、配置和渲染状态 |
 | `#服务器状态令牌` | 主人私聊查看共享上报 token，一台机器一个名字即可自动注册 |
 | `#服务器状态添加 <名称>` | 主人私聊手动添加服务器并由 Yunzai 生成 token |
@@ -133,7 +135,7 @@ ls plugins/servermonitor/index.js
 
 ```yaml
 shared_token: "sm_xxx" # 共享上报 token；首次启动自动生成，也可用 #服务器状态令牌 查看
-public_status: true   # true 时任何人发送 #服务器状态 都会响应；false 时仅 master/admins 可查看
+public_status: false  # true 时任何人发送 #服务器状态 都会响应；false 时仅 master/admins 可查看
 include_local: true   # true 时 #服务器状态 默认包含 Yunzai 本机卡片
 page_size: 8          # 每张图显示服务器数量
 offline_timeout: 30   # 超过多少秒未上报判定离线
@@ -164,7 +166,7 @@ Windows 可运行：
 | 场景 | 命令 |
 | --- | --- |
 | 交互式一键安装器 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.sh)` |
-| Windows 交互式一键安装器 | `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install.ps1 \| iex` |
+| Windows 交互式一键安装器 | 下载 `scripts/install.ps1` 后执行 `powershell -ExecutionPolicy Bypass -File install.ps1` |
 | 安装 Yunzai 插件 | `bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-plugin.sh) /path/to/Yunzai` |
 | Linux systemd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 http://YUNZAI:2536/servermonitor/report` |
 | Docker agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 http://YUNZAI:2536/servermonitor/report` |

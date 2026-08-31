@@ -238,7 +238,11 @@ function parseKeyValueText(text) {
 function parseSystemdEnvironment(text) {
   const values = {}
   for (const line of String(text || "").split(/\r?\n/)) {
-    const match = line.match(/^\s*Environment=([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+    const raw = line.trim()
+    if (!raw.startsWith("Environment=")) continue
+    let body = raw.slice("Environment=".length)
+    if (body.startsWith('"') && body.endsWith('"')) body = body.slice(1, -1)
+    const match = body.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
     if (match) values[match[1]] = match[2].trim()
   }
   return values

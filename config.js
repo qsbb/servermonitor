@@ -16,7 +16,7 @@ const DEFAULT_CONFIG = {
   shared_token: "",
   page_size: 8,
   offline_timeout: 30,
-  public_status: true,
+  public_status: false,
   include_local: true,
   alert: {
     enabled: true,
@@ -25,7 +25,6 @@ const DEFAULT_CONFIG = {
   render: {
     imgType: "png",
   },
-  show_ip_in_image: false,
 }
 
 const cache = {
@@ -83,7 +82,7 @@ function parseKeyValue(text) {
   if (idx < 0) return null
   const key = text.slice(0, idx).trim()
   const value = text.slice(idx + 1).trim()
-  if (!key) return null
+  if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return null
   return [key, parseScalar(value)]
 }
 
@@ -183,6 +182,8 @@ function stringifyConfig(config) {
       lines.push(`    token: ${yamlString(server.token)}`)
       lines.push(`    note: ${yamlString(server.note || "")}`)
       lines.push(`    createdAt: ${Number(server.createdAt) || Date.now()}`)
+      if (Number(server.boundAt)) lines.push(`    boundAt: ${Number(server.boundAt)}`)
+      if (Number(server.renamedAt)) lines.push(`    renamedAt: ${Number(server.renamedAt)}`)
     }
   } else {
     lines.push("servers: []")
@@ -198,7 +199,6 @@ function stringifyConfig(config) {
   lines.push(`  cooldown: ${data.alert.cooldown}`)
   lines.push("render:")
   lines.push(`  imgType: ${yamlString(data.render.imgType)}`)
-  lines.push(`show_ip_in_image: ${data.show_ip_in_image}`)
   return `${lines.join("\n")}\n`
 }
 
@@ -207,12 +207,15 @@ function normalizeServer(item) {
   const name = String(item.name ?? "").trim()
   const token = String(item.token ?? "").trim()
   if (!name || !token) return null
-  return {
+  const out = {
     name,
     token,
     note: String(item.note ?? "").trim(),
     createdAt: Number(item.createdAt) || Date.now(),
   }
+  if (Number(item.boundAt)) out.boundAt = Number(item.boundAt)
+  if (Number(item.renamedAt)) out.renamedAt = Number(item.renamedAt)
+  return out
 }
 
 export function defaultConfig() {
@@ -232,7 +235,7 @@ export function normalizeConfig(input = {}) {
     : []
 
   base.shared_token = String(config.shared_token || "").trim() || makeToken()
-  base.page_size = Math.max(1, toInt(config.page_size, base.page_size))
+  base.page_size = Math.min(16, Math.max(1, toInt(config.page_size, base.page_size)))
   base.offline_timeout = Math.max(5, toInt(config.offline_timeout, base.offline_timeout))
   base.public_status = toBool(config.public_status, base.public_status)
   base.include_local = toBool(config.include_local, base.include_local)
@@ -250,13 +253,12 @@ export function normalizeConfig(input = {}) {
       : base.render.imgType,
   }
 
-  base.show_ip_in_image = toBool(config.show_ip_in_image, base.show_ip_in_image)
   return base
 }
 
 async function atomicWriteFile(file, content) {
   await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`
   await fs.writeFile(tmp, content, "utf8")
   await fs.rename(tmp, file)
 }
@@ -280,6 +282,10 @@ export async function loadConfig(force = false) {
   const parsed = parseConfigText(raw)
 
   if (raw.trim() && Object.keys(parsed).length === 0) {
+    if (cache.data) {
+      ;(globalThis.logger || console).error("[servermonitor] config.yaml 解析失败，沿用最近一次可用配置")
+      return clone(cache.data)
+    }
     const backup = `${CONFIG_FILE}.corrupt-${Date.now()}`
     await fs.copyFile(CONFIG_FILE, backup).catch(() => {})
     ;(globalThis.logger || console).error(`[servermonitor] config.yaml 解析失败，已备份到 ${backup}，本次使用默认配置`)
@@ -312,11 +318,17 @@ export async function saveConfig(config) {
   return clone(data)
 }
 
+let configWriteQueue = Promise.resolve()
+
 export async function updateConfig(mutator) {
-  const current = await loadConfig()
-  const draft = clone(current)
-  const next = await mutator(draft)
-  return await saveConfig(next ?? draft)
+  const run = configWriteQueue.then(async () => {
+    const current = await loadConfig()
+    const draft = clone(current)
+    const next = await mutator(draft)
+    return await saveConfig(next ?? draft)
+  })
+  configWriteQueue = run.catch(() => {})
+  return run
 }
 
 export function makeToken() {

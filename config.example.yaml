@@ -1,13 +1,12 @@
 admins: []
 servers: []
-shared_token: "sm_change_me_or_generate_with_command"
+shared_token: ""
 page_size: 8
 offline_timeout: 30
-public_status: true
+public_status: false
 include_local: true
 alert:
   enabled: true
   cooldown: 120
 render:
   imgType: png
-show_ip_in_image: false

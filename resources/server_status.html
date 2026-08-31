@@ -6,7 +6,7 @@
       <div class="sb-title">{{if detail}}服务器状态 · 详情{{else}}服务器状态 · 总览{{/if}}</div>
       {{if summary}}<div class="sb-summary">{{summary}}</div>{{/if}}
     </div>
-    <div class="sb-pagechip">第 {{pageNum || 1}} / {{pageCount || 1}} 页</div>
+    {{if pageCount && pageCount > 1}}<div class="sb-pagechip">第 {{pageNum || 1}} / {{pageCount}} 页</div>{{/if}}
   </div>
 
   {{if servers && servers.length}}
@@ -62,6 +62,7 @@
             {{if d.text}}<div class="sb-disk-sub">{{d.text}}</div>{{/if}}
           </div>
           {{/each}}
+          {{if s.diskOverflow}}<div class="sb-disk-sub">另有 {{s.diskOverflow}} 个挂载点未显示</div>{{/if}}
         {{else}}
           <div class="sb-note">{{s.diskText || '—'}}</div>
         {{/if}}
@@ -104,12 +105,11 @@
         </div>
         {{/each}}
       </div>
-      {{else}}
-      <div class="sb-section sb-section-empty">{{s.gpuEmptyText || '—'}}</div>
       {{/if}}
 
       <div class="sb-meta">
         {{if s.noteText}}<span class="sb-meta-item">备注 {{s.noteText}}</span>{{/if}}
+        {{if !s.hasGpu && s.gpuEmptyText && s.gpuEmptyText !== '—'}}<span class="sb-meta-item">GPU {{s.gpuEmptyText}}</span>{{/if}}
         <span class="sb-meta-item">数据 {{s.dataAgeText || '从未上报'}}</span>
         <span class="sb-meta-item">上报 {{s.lastSeenText || '—'}}</span>
       </div>

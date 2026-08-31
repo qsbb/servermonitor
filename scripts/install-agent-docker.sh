@@ -17,9 +17,14 @@ if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
 fi
 
 env_value() {
-  local key="$1"
+  local key="$1" value
   [[ -f "$INSTALL_DIR/.env" ]] || return 0
-  sed -n "s/^${key}=//p" "$INSTALL_DIR/.env" | tail -n 1
+  value="$(sed -n "s/^${key}=//p" "$INSTALL_DIR/.env" | tail -n 1)"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  printf '%s' "$value"
 }
 
 UPDATE_MODE=0
@@ -249,13 +254,13 @@ fi
 select_node_image
 
 cat >"$INSTALL_DIR/.env" <<EOF
-SM_NAME="${SM_NAME}"
-SM_TOKEN="${SM_TOKEN}"
-SM_REPORT_URL="${SM_REPORT_URL}"
-SM_INTERVAL="${SM_INTERVAL}"
-SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL}"
-SM_TIMEOUT="${SM_TIMEOUT}"
-NODE_IMAGE="${NODE_IMAGE}"
+SM_NAME=${SM_NAME}
+SM_TOKEN=${SM_TOKEN}
+SM_REPORT_URL=${SM_REPORT_URL}
+SM_INTERVAL=${SM_INTERVAL}
+SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}
+SM_TIMEOUT=${SM_TIMEOUT}
+NODE_IMAGE=${NODE_IMAGE}
 EOF
 
 cd "$INSTALL_DIR"

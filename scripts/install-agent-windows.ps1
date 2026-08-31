@@ -52,6 +52,10 @@ if ($NssmProbe -and (Test-Path (Join-Path $InstallDir "agent.mjs"))) {
     if ($ReportUrl -match "(?m)^SM_REPORT_URL=(.*)$") { $ReportUrl = $Matches[1].Trim() }
     $Token = Get-NssmExtraValue $NssmProbeExe $ServiceName "AppEnvironmentExtra" $Token
     if ($Token -match "(?m)^SM_TOKEN=(.*)$") { $Token = $Matches[1].Trim() }
+    $EnvRaw = Get-NssmExtraValue $NssmProbeExe $ServiceName "AppEnvironmentExtra" ""
+    if ($EnvRaw -match "(?m)^SM_INTERVAL=(.*)$") { $Interval = [int]($Matches[1].Trim()) }
+    if ($EnvRaw -match "(?m)^SM_SLOW_INTERVAL=(.*)$") { $SlowInterval = [int]($Matches[1].Trim()) }
+    if ($EnvRaw -match "(?m)^SM_TIMEOUT=(.*)$") { $Timeout = [int]($Matches[1].Trim()) }
   }
 }
 
@@ -110,7 +114,7 @@ try {
   & $Nssm stop $ServiceName 2>$null | Out-Null
   & $Nssm remove $ServiceName confirm 2>$null | Out-Null
 
-  & $Nssm install $ServiceName $Node (Join-Path $InstallDir "agent.mjs")
+  & $Nssm install $ServiceName $Node (Join-Path $InstallDir "agent.mjs") run
   & $Nssm set $ServiceName AppDirectory $InstallDir
   & $Nssm set $ServiceName AppEnvironmentExtra `
     "SM_NAME=$Name" `

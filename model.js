@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import crypto from "node:crypto"
 import { collectLocalSnapshot } from "./local.js"
 import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
 
@@ -14,7 +15,14 @@ const state = globalThis[STATE_KEY] ??= {
   bootstrapped: false,
   persistedLoaded: false,
   lastPersistAt: 0,
+  pendingPersistAt: 0,
+  reportRate: new Map(),
 }
+const MAX_SERVERS = 64
+const MAX_PENDING_WRITE_MS = 30_000
+const MAX_PENDING_ENTRIES = 100
+const MAX_REPORTS_PER_MIN = 60
+const MAX_REPORTS_PER_IP_MIN = 240
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -30,10 +38,40 @@ function numOrNull(value) {
   return Number.isFinite(n) ? n : null
 }
 
-function strOrNull(value) {
+function timingSafeEqualStrings(a, b) {
+  const left = crypto.createHash("sha256").update(String(a ?? "")).digest()
+  const right = crypto.createHash("sha256").update(String(b ?? "")).digest()
+  return crypto.timingSafeEqual(left, right)
+}
+
+function clientIp(req) {
+  const forwarded = String(req?.headers?.["x-forwarded-for"] || "").split(",")[0].trim()
+  return forwarded || req?.ip || req?.socket?.remoteAddress || "unknown"
+}
+
+function rateLimit(key, limit, windowMs = 60_000) {
+  const now = Date.now()
+  const item = state.reportRate.get(key)
+  if (!item || now > item.resetAt) {
+    state.reportRate.set(key, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+  if (item.count >= limit) return false
+  item.count += 1
+  return true
+}
+
+function allowReport(req, token) {
+  const ip = clientIp(req)
+  if (!rateLimit(`ip:${ip}`, MAX_REPORTS_PER_IP_MIN)) return false
+  if (!rateLimit(`token:${token || ""}:${ip}`, MAX_REPORTS_PER_MIN)) return false
+  return true
+}
+
+function strOrNull(value, max = 128) {
   if (value === null || value === undefined) return null
   const s = String(value).trim()
-  return s ? s : null
+  return s ? s.slice(0, max) : null
 }
 
 function clampPercent(value) {
@@ -62,7 +100,7 @@ function clampPower(value) {
 
 async function atomicWriteJson(file, payload) {
   await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`
   await fs.writeFile(tmp, JSON.stringify(payload, null, 2), "utf8")
   await fs.rename(tmp, file)
 }
@@ -119,6 +157,11 @@ async function hydratePending() {
   const maxAgeMs = 24 * 60 * 60 * 1000
   const maxEntries = 100
   try {
+    const stat = await fs.stat(PENDING_FILE).catch(() => null)
+    if (stat && stat.size > 2 * 1024 * 1024) {
+      ;(globalThis.logger || console).warn("[servermonitor] pending.json too large, skipped hydrate")
+      return
+    }
     const raw = await fs.readFile(PENDING_FILE, "utf8")
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed?.pending)) {
@@ -157,9 +200,21 @@ async function savePendingReport(token, snap, receivedAt = Date.now()) {
   const cleanToken = String(token || "").trim()
   const cleanName = sanitizeServerName(snap?.name || snap?.os?.hostname)
   if (!cleanToken || !cleanName) return null
+  const prev = state.pendingReports.get(cleanToken)
   const item = { token: cleanToken, name: cleanName, snap, lastSeen: receivedAt }
   state.pendingReports.set(cleanToken, item)
-  await persistPending()
+  if (state.pendingReports.size > MAX_PENDING_ENTRIES) {
+    const ordered = [...state.pendingReports.values()].sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+    for (const stale of ordered.slice(MAX_PENDING_ENTRIES)) state.pendingReports.delete(stale.token)
+  }
+  const shouldPersist = !prev
+    || prev.name !== cleanName
+    || receivedAt - (prev.lastSeen || 0) >= MAX_PENDING_WRITE_MS
+    || Date.now() - state.pendingPersistAt >= MAX_PENDING_WRITE_MS
+  if (shouldPersist) {
+    await persistPending()
+    state.pendingPersistAt = Date.now()
+  }
   return item
 }
 
@@ -217,10 +272,11 @@ function sanitizeSnapshot(body) {
   const net = body.net && typeof body.net === "object" ? body.net : {}
   const disks = Array.isArray(body.disks)
     ? body.disks
+        .slice(0, 16)
         .map(item => {
           if (!item || typeof item !== "object") return null
           return {
-            mount: strOrNull(item.mount),
+            mount: strOrNull(item.mount, 128),
             used: clampNonNegative(item.used),
             total: clampNonNegative(item.total),
           }
@@ -230,10 +286,11 @@ function sanitizeSnapshot(body) {
     : []
   const gpus = Array.isArray(body.gpus)
     ? body.gpus
+        .slice(0, 8)
         .map(item => {
           if (!item || typeof item !== "object") return null
           return {
-            model: strOrNull(item.model),
+            model: strOrNull(item.model, 128),
             usage: clampPercent(item.usage),
             temp: clampTemp(item.temp),
             memUsed: clampNonNegative(item.memUsed),
@@ -472,13 +529,12 @@ function formatDiskText(disks) {
 
 function formatGpuText(gpu) {
   const parts = []
-  if (gpu.usage !== null && gpu.usage !== undefined) parts.push(formatPercent(gpu.usage))
-  parts.push(`温度 ${formatTemp(gpu.temp)}`)
+  if (gpu.temp !== null && gpu.temp !== undefined) parts.push(`温度 ${formatTemp(gpu.temp)}`)
   if (gpu.memUsed !== null || gpu.memTotal !== null) {
     parts.push(`显存 ${formatSizeGB(gpu.memUsed)}/${formatSizeGB(gpu.memTotal)}`)
   }
-  parts.push(`功耗 ${formatPower(gpu.power)}`)
-  return parts.join(" · ")
+  if (gpu.power !== null && gpu.power !== undefined) parts.push(`功耗 ${formatPower(gpu.power)}`)
+  return parts.join(" · ") || "—"
 }
 
 function maxPercent(values) {
@@ -537,8 +593,8 @@ function buildGpuView(snap) {
     const usage = clampPercent(gpu.usage)
     return {
       model: gpu.model || "未知 GPU",
-      pct: usage ?? 0,
-      color: severityColor(usage ?? 0),
+      pct: usage,
+      color: usage === null ? "#98a0b3" : severityColor(usage),
       text: formatGpuText(gpu),
     }
   })
@@ -558,28 +614,25 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   const cpuUsage = clampPercent(snap?.cpu?.usage)
   const cpuText = snap
     ? [
-        `占用 ${formatPercent(cpuUsage)}`,
-        `温度 ${formatTemp(snap.cpu?.temp)}`,
-        `功耗 ${formatPower(snap.cpu?.power)}`,
-      ].join(" · ")
+        snap.cpu?.temp !== null && snap.cpu?.temp !== undefined ? `温度 ${formatTemp(snap.cpu.temp)}` : null,
+        snap.cpu?.power !== null && snap.cpu?.power !== undefined ? `功耗 ${formatPower(snap.cpu.power)}` : null,
+      ].filter(Boolean).join(" · ") || "—"
     : "—"
 
   const memUsed = numOrNull(snap?.mem?.used)
   const memTotal = numOrNull(snap?.mem?.total)
   const memPct = computeUsagePercent(memUsed, memTotal)
-  const memText = snap
-    ? `${formatSizeGB(memUsed)} / ${formatSizeGB(memTotal)}${memPct === null ? "" : ` (${formatPercent(memPct)})`}`
-    : "—"
+  const memText = snap ? `${formatSizeGB(memUsed)} / ${formatSizeGB(memTotal)}` : "—"
 
   const netLines = snap
     ? [
-        `↓ ${formatRateMB(snap.net?.rxSec)}`,
-        `↑ ${formatRateMB(snap.net?.txSec)}`,
-        `累计 ↓ ${formatSizeGB(snap.net?.rxTotal)}`,
-        `累计 ↑ ${formatSizeGB(snap.net?.txTotal)}`,
-      ]
+        snap.net?.rxSec !== null && snap.net?.rxSec !== undefined ? `↓ ${formatRateMB(snap.net.rxSec)}` : null,
+        snap.net?.txSec !== null && snap.net?.txSec !== undefined ? `↑ ${formatRateMB(snap.net.txSec)}` : null,
+        snap.net?.rxTotal !== null && snap.net?.rxTotal !== undefined ? `累计 ↓ ${formatSizeGB(snap.net.rxTotal)}` : null,
+        snap.net?.txTotal !== null && snap.net?.txTotal !== undefined ? `累计 ↑ ${formatSizeGB(snap.net.txTotal)}` : null,
+      ].filter(Boolean)
     : []
-  const netText = netLines.length ? netLines.join(" · ") : "—"
+  const netText = netLines.length ? netLines.join(" · ") : (snap ? "无网络数据" : "—")
 
   const powerParts = []
   if (snap?.cpu?.power !== null && snap?.cpu?.power !== undefined) powerParts.push(`CPU ${formatPower(snap.cpu.power)}`)
@@ -593,8 +646,10 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   const powerText = powerParts.length ? powerParts.join(" · ") : "—"
 
   const diskText = snap ? formatDiskText(snap.disks) : "—"
+  const allDisks = snap && Array.isArray(snap.disks) ? snap.disks : []
+  const diskOverflow = Math.max(0, allDisks.length - 8)
   const diskView = snap
-    ? (Array.isArray(snap.disks) ? snap.disks : [])
+    ? allDisks
         .map(d => {
           const pct = computeUsagePercent(d.used, d.total)
           const used = formatSizeGB(d.used)
@@ -604,7 +659,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
             pct: pct ?? 0,
             hasPct: pct !== null,
             color: severityColor(pct ?? 0),
-            text: `${String(d.mount || "?")} ${used}/${total} · ${formatPercent(pct)}`,
+            text: `${used}/${total}`,
             usedText: used,
             totalText: total,
           }
@@ -647,14 +702,15 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     dataAgeText,
     lastSeenText,
     cpuModel: snap?.cpu?.model || "未知 CPU",
-    cpuPct: snap ? (cpuUsage ?? 0) : null,
-    cpuColor: severityColor(cpuUsage ?? 0),
+    cpuPct: cpuUsage,
+    cpuColor: cpuUsage === null ? "#98a0b3" : severityColor(cpuUsage),
     cpuText,
     memText,
     memPct,
     memColor: severityColor(memPct ?? 0),
     diskText,
     disks: diskView,
+    diskOverflow,
     netText,
     netLines,
     powerText,
@@ -696,7 +752,7 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
   const online = scope.filter(i => i.state === "online").length
   const offline = scope.filter(i => i.state === "offline").length
   const pending = scope.filter(i => i.state === "pending").length
-  const busiest = scope.filter(i => i.state === "online").sort((a, b) => (b.cpuPct ?? 0) - (a.cpuPct ?? 0))[0]
+  const busiest = scope.filter(i => i.state === "online" && i.cpuPct !== null).sort((a, b) => (b.cpuPct ?? 0) - (a.cpuPct ?? 0))[0]
   const summary = [
     `共 ${scope.length} 台`,
     `${online} 在线`,
@@ -705,6 +761,8 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
     busiest ? `最忙 ${busiest.name} CPU ${formatPercent(busiest.cpuPct)}` : null,
   ].filter(Boolean).join(" · ")
 
+  const totalEntries = Array.isArray(allEntries) && allEntries.length ? allEntries.length : list.length
+  const useGrid = totalEntries >= 4
   return {
     summary,
     servers: list,
@@ -715,8 +773,8 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
     pageSize: config.page_size,
     imgType: config.render?.imgType || "png",
     layout: {
-      cols: list.length >= 4 ? 2 : 1,
-      mode: list.length >= 4 ? "grid" : "stack",
+      cols: useGrid ? 2 : 1,
+      mode: useGrid ? "grid" : "stack",
     },
   }
 }
@@ -762,11 +820,12 @@ export async function listServersText() {
 }
 
 export async function addServer(name, note = "") {
-  const cleanName = String(name || "").trim()
+  const cleanName = sanitizeServerName(name)
   if (!cleanName) throw new Error("服务器名不能为空")
   const cleanNote = String(note || "").trim()
   const config = await updateConfig(current => {
     if (current.servers.some(item => item.name === cleanName)) throw new Error(`服务器【${cleanName}】已存在`)
+    if (current.servers.length >= MAX_SERVERS) throw new Error(`服务器数量已达上限（${MAX_SERVERS}）`)
     current.servers.push({
       name: cleanName,
       token: makeToken(),
@@ -807,10 +866,11 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
     if (conflict) throw new Error(`token已绑定服务器【${conflict.name}】`)
     const existing = current.servers.find(item => item.name === cleanName)
     if (existing) {
-      existing.token = cleanToken
+      if (existing.token !== cleanToken) throw new Error(`服务器【${cleanName}】已绑定其他 token`)
       existing.note = cleanNote
       existing.boundAt = Date.now()
     } else {
+      if (current.servers.length >= MAX_SERVERS) throw new Error(`服务器数量已达上限（${MAX_SERVERS}）`)
       current.servers.push({
         name: cleanName,
         token: cleanToken,
@@ -883,16 +943,27 @@ export async function handleReport(req, res) {
     let config = await refreshConfig()
     const token = String(req.get("X-SM-Token") || "").trim()
     const tokenTail = token ? token.slice(-6) : ""
+    if (token.length > 128) return res.status(422).json({ ok: false, msg: "token too long" })
+    if (!allowReport(req, token)) return res.status(429).json({ ok: false, msg: "too many requests" })
     const body = req.body
     if (!body || typeof body !== "object" || body.v !== 1) {
       return res.status(422).json({ ok: false, msg: "bad schema" })
     }
 
     let server = resolveConfigByToken(token)
-    const isSharedToken = token && token === String(config.shared_token || "").trim()
+    const isSharedToken = token && timingSafeEqualStrings(token, config.shared_token)
     if (!server && isSharedToken) {
       const autoName = sanitizeServerName(body.name || body.os?.hostname)
       if (!autoName) return res.status(422).json({ ok: false, msg: "missing name" })
+      const existingByName = resolveConfigServer(autoName)
+      if (existingByName) {
+        log.warn?.(`[servermonitor] report rejected: shared token name conflict ${autoName} token=...${tokenTail}`)
+        return res.status(403).json({ ok: false, msg: "name conflict" })
+      }
+      if ((config.servers?.length || 0) >= MAX_SERVERS) {
+        log.warn?.(`[servermonitor] report rejected: server cap reached token=...${tokenTail}`)
+        return res.status(429).json({ ok: false, msg: "server limit reached" })
+      }
       server = resolveConfigServer(autoName)
       if (!server) {
         config = await updateConfig(current => {

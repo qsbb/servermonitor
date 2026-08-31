@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.14"
+const AGENT_VERSION = "0.1.15"
 
 const THIS_FILE = fileURLToPath(import.meta.url)
 const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
@@ -142,11 +142,20 @@ function timeoutSignal(ms = 5000) {
   }
 }
 
-async function safe(fn, fallback = null) {
+async function safe(fn, fallback = null, timeout = 5000) {
+  let timer
   try {
-    return await fn()
+    return await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout ${timeout}ms`)), timeout)
+        timer.unref?.()
+      }),
+    ])
   } catch {
     return fallback
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -214,7 +223,7 @@ async function readLinuxCpuTempFromSysfs() {
   }
 
   const readLabel = async dir => {
-    for (const name of ["name", "temp1_label", "temp2_label", "temp3_label"]) {
+    for (const name of ["type", "name", "temp1_label", "temp2_label", "temp3_label"]) {
       const raw = await fs.readFile(path.join(dir, name), "utf8").catch(() => "")
       if (raw.trim()) return raw.trim().toLowerCase()
     }
@@ -226,7 +235,7 @@ async function readLinuxCpuTempFromSysfs() {
   for (const dirent of hwmons) {
     const dir = path.join(hwmonDir, dirent.name)
     const label = await readLabel(dir)
-    const isCpuLike = /coretemp|k10temp|zenpower|cpu_thermal|x86_pkg_temp|acpitz|cpu/.test(label)
+    const isCpuLike = /coretemp|k10temp|zenpower|cpu_thermal|x86_pkg_temp|cpu/.test(label)
     const entries = await safe(() => fs.readdir(dir), [])
     for (const entry of entries) {
       if (!/^temp\d+_input$/.test(entry)) continue
@@ -249,8 +258,8 @@ async function readLinuxCpuTempFromSysfs() {
 
   if (!candidates.length) return null
   const cpuLike = candidates.filter(item => item.isCpuLike)
-  const pool = cpuLike.length ? cpuLike : candidates
-  return Math.max(...pool.map(item => item.value))
+  if (!cpuLike.length) return null
+  return Math.max(...cpuLike.map(item => item.value))
 }
 
 async function collectCpuTempWindows() {
@@ -293,7 +302,7 @@ async function collectCpuPowerLinux(raplPrev) {
   if (process.platform !== "linux") return null
   const base = "/sys/class/powercap"
   const dirs = await safe(() => fs.readdir(base, { withFileTypes: true }), [])
-  const packages = dirs.filter(dirent => dirent.isDirectory() && /^intel-rapl:\d+$/.test(dirent.name))
+  const packages = dirs.filter(dirent => (dirent.isDirectory() || dirent.isSymbolicLink()) && /^(intel|amd)-rapl:\d+$/i.test(dirent.name))
   if (!packages.length) return null
 
   let total = 0
@@ -339,7 +348,7 @@ class Collector {
     this.raplPrev = new Map()
     this.failCount = 0
     // systeminformation needs two samples before network rates become available
-    si.networkStats().catch(() => [])
+    safe(() => si.networkStats(), [], 5000).catch(() => [])
   }
 
   async refreshStatic(force = false) {
@@ -413,7 +422,7 @@ class Collector {
       disks: filterDisks(disks),
       cpuTemp: temp,
       gpus: gpuList,
-      cpuPower: await collectCpuPowerLinux(this.raplPrev),
+      cpuPower: await safe(() => collectCpuPowerLinux(this.raplPrev), null, 5000),
     }
     this.lastSlowAt = now
     return this.slowCache
@@ -630,7 +639,7 @@ async function main() {
     process.exit(0)
   }
 
-  if (process.platform === "win32" && cliArgv.length === 0) {
+  if (process.platform === "win32" && cliArgv.length === 0 && process.stdin.isTTY) {
     await showWindowsMenu()
     return
   }

@@ -78,7 +78,7 @@ async function collectCpuTempLinux() {
   if (process.platform !== "linux") return null
   const base = "/sys/class/thermal"
   const entries = await safe(() => fs.readdir(base, { withFileTypes: true }), [])
-  const zones = entries.filter(item => item.isDirectory() && item.name.startsWith("thermal_zone"))
+  const zones = entries.filter(item => item.name.startsWith("thermal_zone"))
   let maxTemp = null
   for (const zone of zones) {
     const tempPath = path.join(base, zone.name, "temp")
@@ -179,7 +179,7 @@ async function collectCpuPowerLinux() {
   if (process.platform !== "linux") return null
   const base = "/sys/class/powercap"
   const dirs = await safe(() => fs.readdir(base, { withFileTypes: true }), [])
-  const packages = dirs.filter(dirent => dirent.isDirectory() && /^intel-rapl:\d+$/.test(dirent.name))
+  const packages = dirs.filter(dirent => (dirent.isDirectory() || dirent.isSymbolicLink()) && /^(intel|amd)-rapl:\d+$/i.test(dirent.name))
   if (!packages.length) return null
 
   let total = 0

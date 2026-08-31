@@ -1,7 +1,7 @@
 import { handleReport } from "./model.js"
 
 const REPORT_ROUTES = ["/servermonitor/report", "/server-monitor/report"]
-const QUIET_PREFIXES = ["/servermonitor", "/server-monitor"]
+const MAX_BODY_BYTES = 256 * 1024
 
 function ensureArray(target, key) {
   if (!target[key]) target[key] = []
@@ -15,16 +15,21 @@ function registerOnce() {
 
   if (!app.__servermonitorRegistered) {
     app.__servermonitorRegistered = true
-    const quiet = ensureArray(app, "quiet")
     const skipAuth = ensureArray(app, "skip_auth")
-
-    for (const prefix of QUIET_PREFIXES) {
-      if (!quiet.includes(prefix)) quiet.push(prefix)
-      if (!skipAuth.includes(prefix)) skipAuth.push(prefix)
+    const quiet = ensureArray(app, "quiet")
+    for (const route of REPORT_ROUTES) {
+      if (!skipAuth.includes(route)) skipAuth.push(route)
+      if (!quiet.includes(route)) quiet.push(route)
     }
 
     for (const route of REPORT_ROUTES) {
-      app.post(route, (req, res) => {
+      app.post(route, (req, res, next) => {
+        const len = Number(req.headers["content-length"] || 0)
+        if (len > MAX_BODY_BYTES) {
+          return res.status(413).json({ ok: false, msg: "payload too large" })
+        }
+        return next()
+      }, (req, res) => {
         return globalThis.__servermonitorReportHandler(req, res)
       })
     }

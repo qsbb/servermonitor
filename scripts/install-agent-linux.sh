@@ -99,7 +99,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 svc_env_value() {
   local key="$1"
   [[ -f "$SERVICE_FILE" ]] || return 0
-  sed -n "s/^Environment=${key}=//p" "$SERVICE_FILE" | tail -n 1
+  sed -n -e "s/^Environment=\"${key}=\(.*\)\"$/\1/p" -e "s/^Environment=${key}=\(.*\)$/\1/p" "$SERVICE_FILE" | tail -n 1
 }
 
 SM_NAME="${SM_NAME:-${1:-}}"

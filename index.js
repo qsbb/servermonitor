@@ -148,6 +148,7 @@ export class servermonitor extends plugin {
   }
 
   async pending() {
+    if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行：#服务器状态待绑定")
     const items = await listPendingTokens()
     if (!items.length) {
       return this.reply([
@@ -170,6 +171,7 @@ export class servermonitor extends plugin {
       `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态令牌        查看共享上报 token`,
       `#服务器状态添加 <名称>  主人私聊添加服务器`,
+      `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
       `#服务器状态改名 <旧名> <新名>  修改服务器名称`,
       `#服务器状态删除 <名称>  主人删除服务器`,
@@ -177,6 +179,7 @@ export class servermonitor extends plugin {
   }
 
   async check() {
+    if (!(await this._isAdmin())) return this._replyNoPermission()
     const routeReady = initServerMonitorRoutes()
     const config = await loadConfig()
     const entries = await getEntries().catch(() => [])
