@@ -623,6 +623,10 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   const memTotal = numOrNull(snap?.mem?.total)
   const memPct = computeUsagePercent(memUsed, memTotal)
   const memText = snap ? `${formatSizeGB(memUsed)} / ${formatSizeGB(memTotal)}` : "—"
+  const swapText = snap
+    ? `${formatSizeGB(numOrNull(snap.mem?.swapUsed))} / ${formatSizeGB(numOrNull(snap.mem?.swapTotal))}`
+    : "—"
+  const cpuCoresText = snap ? (numOrNull(snap.cpu?.cores) ?? "—") : "—"
 
   const netLines = snap
     ? [
@@ -633,6 +637,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
       ].filter(Boolean)
     : []
   const netText = netLines.length ? netLines.join(" · ") : (snap ? "无网络数据" : "—")
+  const netIfaceText = snap ? (snap.net?.iface || "—") : "—"
 
   const powerParts = []
   if (snap?.cpu?.power !== null && snap?.cpu?.power !== undefined) powerParts.push(`CPU ${formatPower(snap.cpu.power)}`)
@@ -705,7 +710,9 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     cpuPct: cpuUsage,
     cpuColor: cpuUsage === null ? "#98a0b3" : severityColor(cpuUsage),
     cpuText,
+    cpuCoresText,
     memText,
+    swapText,
     memPct,
     memColor: severityColor(memPct ?? 0),
     diskText,
@@ -713,6 +720,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     diskOverflow,
     netText,
     netLines,
+    netIfaceText,
     powerText,
     loadText,
     hasGpu: gpuView.hasGpu,

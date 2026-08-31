@@ -107,6 +107,22 @@
       </div>
       {{/if}}
 
+      {{if detail}}
+      <div class="sb-section">
+        <div class="sb-sec-head"><span class="sb-label">详情</span></div>
+        <div class="sb-split">
+          <div class="sb-cell">
+            <div class="sb-kv"><span class="sb-kv-key">CPU 核心</span><span class="sb-kv-val">{{s.cpuCoresText || '—'}}</span></div>
+            <div class="sb-kv"><span class="sb-kv-key">交换分区</span><span class="sb-kv-val">{{s.swapText || '—'}}</span></div>
+          </div>
+          <div class="sb-cell">
+            <div class="sb-kv"><span class="sb-kv-key">网卡</span><span class="sb-kv-val">{{s.netIfaceText || '—'}}</span></div>
+            <div class="sb-kv"><span class="sb-kv-key">数据年龄</span><span class="sb-kv-val">{{s.dataAgeText || '—'}}</span></div>
+          </div>
+        </div>
+      </div>
+      {{/if}}
+
       <div class="sb-meta">
         {{if s.noteText}}<span class="sb-meta-item">备注 {{s.noteText}}</span>{{/if}}
         {{if !s.hasGpu && s.gpuEmptyText && s.gpuEmptyText !== '—'}}<span class="sb-meta-item">GPU {{s.gpuEmptyText}}</span>{{/if}}
