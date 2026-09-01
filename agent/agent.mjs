@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.16"
+const AGENT_VERSION = "0.1.17"
 
 const THIS_FILE = fileURLToPath(import.meta.url)
 const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
@@ -203,12 +203,12 @@ async function collectGpuFallback() {
   const ctrls = Array.isArray(gfx?.controllers) ? gfx.controllers : []
   if (!ctrls.length) return []
   return ctrls.map(ctrl => ({
-    model: ctrl.model || null,
-    usage: null,
-    temp: null,
-    memUsed: normalizeVram(ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null),
-    memTotal: normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? null),
-    power: null,
+    model: ctrl.model || ctrl.name || null,
+    usage: clipPercent(ctrl.utilizationGpu ?? ctrl.utilization ?? null),
+    temp: num(ctrl.temperatureGpu ?? ctrl.temperature ?? null),
+    memUsed: normalizeVram(ctrl.memoryUsed ?? ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null),
+    memTotal: normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? ctrl.memoryTotal ?? null),
+    power: num(ctrl.powerDraw ?? ctrl.power ?? null),
   }))
 }
 
