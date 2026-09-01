@@ -58,8 +58,24 @@ export class servermonitor extends plugin {
       event: "message",
       priority: 5000,
       task: [
-        { name: "servermonitor离线扫描", fnc: "scanOffline", cron: "*/10 * * * * *", log: false },
-        { name: "servermonitor快照落盘", fnc: "persist", cron: "*/30 * * * * *", log: false },
+        {
+          name: "servermonitor离线扫描",
+          fnc: async () => {
+            initServerMonitorRoutes()
+            await scanOfflineModel()
+          },
+          cron: "*/10 * * * * *",
+          log: false,
+        },
+        {
+          name: "servermonitor快照落盘",
+          fnc: async () => {
+            initServerMonitorRoutes()
+            await persistModel()
+          },
+          cron: "*/30 * * * * *",
+          log: false,
+        },
       ],
       rule: [
         { reg: "^#?(服务器状态检查|servermonitor检查)$", fnc: "check", log: false },
