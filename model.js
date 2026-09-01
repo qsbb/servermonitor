@@ -821,9 +821,10 @@ export async function listServersText() {
 
   const lines = []
   lines.push(`已注册 ${entries.length} 台服务器`)
-  for (const item of entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
-    lines.push(`${item.name} · ${item.stateText} · ${item.dataAgeText}${item.noteText ? ` · ${item.noteText}` : ""}`)
-  }
+  entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))
+  entries.forEach((item, idx) => {
+    lines.push(`${idx + 1}. ${item.name} · ${item.stateText} · ${item.dataAgeText}${item.noteText ? ` · ${item.noteText}` : ""}`)
+  })
   return lines.join("\n")
 }
 

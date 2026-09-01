@@ -1,6 +1,8 @@
 import plugin from "../../lib/plugins/plugin.js"
 import cfg from "../../lib/config/config.js"
-import { CONFIG_FILE, DATA_DIR, getReportUrlPath, loadConfig } from "./config.js"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
+import { CONFIG_FILE, DATA_DIR, ROOT_DIR, getReportUrlPath, loadConfig } from "./config.js"
 import {
   getEntries,
   getEntryByName,
@@ -20,6 +22,24 @@ import {
 import { initServerMonitorRoutes } from "./server.js"
 
 const PLUGIN_NAME = "servermonitor"
+const execFileAsync = promisify(execFile)
+const deleteConfirmations = new Map()
+const DELETE_CONFIRM_TTL = 5 * 60 * 1000
+
+function sortedServers(config) {
+  return [...(config?.servers || [])].sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN"))
+}
+
+function serverIndexText(config) {
+  const servers = sortedServers(config)
+  if (!servers.length) return "当前没有已注册服务器"
+  return [
+    `已注册 ${servers.length} 台服务器：`,
+    ...servers.map((item, idx) => `${idx + 1}. ${item.name}${item.note ? ` · ${item.note}` : ""}`),
+    `删除示例：#删除服务器 1`,
+    `确认示例：#确认删除服务器 1`,
+  ].join("\n")
+}
 
 function getMessageText(e) {
   return String(e?.msg ?? e?.raw_message ?? "").trim()
@@ -52,6 +72,11 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态绑定\\s+(\\S{8,128})$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态改名\\s+(\\S{1,32})\\s+(\\S{1,32})$", fnc: "rename", permission: "master", log: false },
         { reg: "^#?服务器状态删除\\s+(\\S{1,32})$", fnc: "del", permission: "master", log: false },
+        { reg: "^#?删除服务器$", fnc: "deleteByIndex", permission: "master", log: false },
+        { reg: "^#?删除服务器\\s*[+＋]?\\s*(\\d+)$", fnc: "deleteByIndex", permission: "master", log: false },
+        { reg: "^#?确认删除服务器$", fnc: "confirmDelete", permission: "master", log: false },
+        { reg: "^#?确认删除服务器\\s*[+＋]?\\s*(\\d+)$", fnc: "confirmDelete", permission: "master", log: false },
+        { reg: "^#?服务器状态插件更新$", fnc: "updatePlugin", permission: "master", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
       ],
@@ -168,13 +193,17 @@ export class servermonitor extends plugin {
       `#服务器状态            查看全部服务器`,
       `#服务器状态 <名称>     查看单台服务器`,
       `#服务器状态列表        列出已注册服务器`,
+      `#服务器状态帮助        查看本帮助`,
       `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态令牌        查看共享上报 token`,
       `#服务器状态添加 <名称>  主人私聊添加服务器`,
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
       `#服务器状态改名 <旧名> <新名>  修改服务器名称`,
-      `#服务器状态删除 <名称>  主人删除服务器`,
+      `#删除服务器 <序号>      主人按序号选择要删除的服务器`,
+      `#确认删除服务器 <序号>  主人二次确认后删除服务器`,
+      `#服务器状态插件更新    主人更新插件代码`,
+      `#服务器状态删除 <名称>  主人按名称删除服务器`,
     ].join("\n"))
   }
 
@@ -306,6 +335,74 @@ export class servermonitor extends plugin {
       return this.reply(`已删除服务器【${name}】`)
     } catch (err) {
       return this.reply(`删除失败：${err.message || err}`)
+    }
+  }
+
+  async deleteByIndex() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?删除服务器\s*[+＋]?\s*(\d+)?$/)
+    const config = await loadConfig()
+
+    if (!args?.[0]) {
+      return this.reply(serverIndexText(config))
+    }
+
+    const index = Number(args[0])
+    const servers = sortedServers(config)
+    const item = servers[index - 1]
+    if (!item) return this.reply(`未找到序号 ${index} 对应的服务器`)
+
+    const userId = String(this.e.user_id || "")
+    deleteConfirmations.set(userId, {
+      name: item.name,
+      index,
+      expireAt: Date.now() + DELETE_CONFIRM_TTL,
+    })
+
+    return this.reply([
+      `即将删除服务器【${item.name}】`,
+      `请在 5 分钟内发送：#确认删除服务器 ${index}`,
+    ].join("\n"))
+  }
+
+  async confirmDelete() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?确认删除服务器\s*[+＋]?\s*(\d+)?$/)
+    const userId = String(this.e.user_id || "")
+    const pending = deleteConfirmations.get(userId)
+
+    if (!pending || Date.now() > pending.expireAt) {
+      deleteConfirmations.delete(userId)
+      return this.reply("没有待确认的删除操作，请先发送：#删除服务器 <序号>")
+    }
+
+    if (args?.[0] && Number(args[0]) !== pending.index) {
+      return this.reply(`序号不一致，请发送：#确认删除服务器 ${pending.index}`)
+    }
+
+    try {
+      await removeServer(pending.name)
+      deleteConfirmations.delete(userId)
+      return this.reply(`已删除服务器【${pending.name}】`)
+    } catch (err) {
+      return this.reply(`删除失败：${err.message || err}`)
+    }
+  }
+
+  async updatePlugin() {
+    try {
+      const { stdout } = await execFileAsync("git", ["pull", "--ff-only"], {
+        cwd: ROOT_DIR,
+        timeout: 60_000,
+      })
+      const output = String(stdout || "").trim()
+      return this.reply([
+        `【${PLUGIN_NAME}】插件更新完成`,
+        output || "已是最新版本",
+      ].join("\n"))
+    } catch (err) {
+      const detail = String(err?.stderr || err?.message || err).trim()
+      return this.reply(`插件更新失败：${detail || "未知错误"}`)
     }
   }
 

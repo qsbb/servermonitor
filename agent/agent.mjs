@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.15"
+const AGENT_VERSION = "0.1.16"
 
 const THIS_FILE = fileURLToPath(import.meta.url)
 const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
