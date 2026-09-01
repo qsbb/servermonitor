@@ -406,8 +406,9 @@ export class servermonitor extends plugin {
   }
 
   async updatePlugin() {
+    const upstream = "https://github.com/qsbb/servermonitor.git"
     try {
-      const { stdout } = await execFileAsync("git", ["pull", "--ff-only"], {
+      const { stdout } = await execFileAsync("git", ["pull", "--ff-only", upstream, "main"], {
         cwd: ROOT_DIR,
         timeout: 60_000,
       })
@@ -418,7 +419,10 @@ export class servermonitor extends plugin {
       ].join("\n"))
     } catch (err) {
       const detail = String(err?.stderr || err?.message || err).trim()
-      return this.reply(`插件更新失败：${detail || "未知错误"}`)
+      return this.reply([
+        `插件更新失败：${detail || "未知错误"}`,
+        `可尝试在插件目录执行：git remote set-url origin ${upstream}`,
+      ].join("\n"))
     }
   }
 
