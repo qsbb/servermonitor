@@ -108,6 +108,10 @@ test("linux update stages the new agent and preserves the token", async () => {
   assert.equal(config.name, "web-01")
   const unit = await fs.readFile(path.join(serviceDir, "servermonitor-agent.service"), "utf8")
   assert.doesNotMatch(unit, /SM_TOKEN|Environment=/)
+  assert.match(unit, /NoNewPrivileges=true/)
+  assert.match(unit, /ProtectSystem=full/)
+  assert.match(unit, /PrivateTmp=true/)
+  assert.match(unit, /CapabilityBoundingSet=/)
   const calls = (await fs.readFile(log, "utf8")).trim().split("\n")
   assert.ok(calls.some(call => call.startsWith("systemctl stop ")))
   assert.ok(calls.some(call => call.startsWith("systemctl enable --now ")))
@@ -202,6 +206,27 @@ test("macos cutover failure rolls back to the previous agent", async () => {
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /restoring previous installation/)
   assert.match(await fs.readFile(path.join(installDir, "agent.mjs"), "utf8"), /old-agent/)
+})
+
+test("macos plist escapes XML metacharacters in install paths", async () => {
+  const sandbox = await makeSandbox()
+  const installDir = path.join(sandbox.dir, "opt&co", "servermonitor-agent")
+  const launchdDir = path.join(sandbox.dir, "LaunchDaemons")
+  await seedInstall(installDir, 'console.log("old-agent")\n', { name: "mac-01", token: "sm_old_token", reportUrl: "http://old/report" })
+  await fs.mkdir(launchdDir, { recursive: true })
+  const plist = path.join(launchdDir, "com.servermonitor.agent.plist")
+  await fs.writeFile(plist, "<plist><dict><key>SM_TOKEN</key><string>sm_old_token</string></dict></plist>")
+
+  const result = runInstaller("scripts/install-agent-macos.sh", sandbox, {
+    INSTALL_DIR: installDir,
+    LAUNCHD_DIR: launchdDir,
+    LOG_DIR: path.join(sandbox.dir, "logs"),
+    STUB_LAUNCHCTL_LOG: path.join(sandbox.dir, "launchctl.log"),
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const plistText = await fs.readFile(plist, "utf8")
+  assert.match(plistText, /opt&amp;co/)
+  assert.doesNotMatch(plistText, /&(?!amp;|lt;|gt;|quot;|#)/)
 })
 
 test("installers prefer the official repo even when a mirror answers faster", async () => {

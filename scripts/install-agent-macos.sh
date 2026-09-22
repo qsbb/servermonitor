@@ -148,6 +148,15 @@ LOG_DIR="${LOG_DIR:-/var/log/servermonitor}"
 SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
 HEALTH_CHECK_DELAY="${HEALTH_CHECK_DELAY:-2}"
 
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  printf '%s' "$value"
+}
+
 validate_install_dir() {
   local dir="$1"
   [[ "$dir" == /* ]] || { echo "INSTALL_DIR must be an absolute path" >&2; exit 1; }
@@ -278,22 +287,22 @@ cat >"$STAGING_PLIST" <<EOF
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LABEL}</string>
+  <string>$(xml_escape "$LABEL")</string>
   <key>WorkingDirectory</key>
-  <string>${INSTALL_DIR}</string>
+  <string>$(xml_escape "$INSTALL_DIR")</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${NODE_BIN}</string>
-    <string>${INSTALL_DIR}/agent.mjs</string>
+    <string>$(xml_escape "$NODE_BIN")</string>
+    <string>$(xml_escape "${INSTALL_DIR}/agent.mjs")</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${LOG_DIR}/agent.log</string>
+  <string>$(xml_escape "${LOG_DIR}/agent.log")</string>
   <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/agent.err.log</string>
+  <string>$(xml_escape "${LOG_DIR}/agent.err.log")</string>
 </dict>
 </plist>
 EOF

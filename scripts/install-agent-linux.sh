@@ -285,6 +285,17 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${NODE_BIN} ${INSTALL_DIR}/agent.mjs
 Restart=always
 RestartSec=5
+# 权限收紧：agent 只需要读取 /proc /sys 并发起网络连接
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target
