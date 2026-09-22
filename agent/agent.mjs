@@ -183,14 +183,26 @@ export function hostMountPaths(mounts) {
     .map(mountpoint => mountpoint === "/" ? "/host" : (mountpoint.startsWith("/host") ? mountpoint : `/host${mountpoint}`))
 }
 
+export const HOST_MOUNTS_FILES = ["/host/proc/1/mounts", "/host/proc/mounts", "/proc/self/mounts"]
+
+export async function readHostMountsText(readFile = fs.readFile) {
+  for (const file of HOST_MOUNTS_FILES) {
+    try {
+      const text = await readFile(file, "utf8")
+      if (text) return text
+    } catch {}
+  }
+  return ""
+}
+
 async function collectDockerHostDisks() {
   if (process.platform !== "linux" || !fssync.existsSync("/host")) return null
-  // /host/proc/mounts 才能看到宿主机全部挂载；/proc/self/mounts 在 exec 进程里可能只有 /host
-  const mounts = parseHostMounts(await fs.readFile("/host/proc/mounts", "utf8").catch(() => ""))
+  // 三个来源都试一遍：宿主机 PID1 视图最准，容器视图次之；失败时回退到只报根分区
+  const mounts = parseHostMounts(await readHostMountsText())
   const paths = [...new Set(hostMountPaths(mounts))].filter(item => {
     try { fssync.accessSync(item); return true } catch { return false }
   })
-  if (!paths.length) return null
+  if (paths.length <= 1 && paths[0] === "/host") return null
   const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000)
   return Array.isArray(rows) && rows.length ? rows : null
 }

@@ -203,3 +203,15 @@ test("hostMountPaths accepts both container and host mountpoint forms", { skip }
   ]
   assert.deepEqual(agent.hostMountPaths(mounts), ["/host", "/host/ssd", "/host/mnt/nas/AI"])
 })
+
+test("readHostMountsText falls back across candidate files", { skip }, async () => {
+  const seen = []
+  const text = await agent.readHostMountsText(async file => {
+    seen.push(file)
+    if (file === "/host/proc/1/mounts") throw new Error("missing")
+    if (file === "/host/proc/mounts") return "/dev/sda2 /host ext4 rw 0 0\n"
+    throw new Error("unexpected")
+  })
+  assert.equal(text, "/dev/sda2 /host ext4 rw 0 0\n")
+  assert.deepEqual(seen, ["/host/proc/1/mounts", "/host/proc/mounts"])
+})
