@@ -182,3 +182,14 @@ test("collectDiskLinuxDf maps explicit paths back to host mountpoints", { skip }
   const root = rows.find(item => item.mount === "/")
   assert.ok(root && Number.isFinite(root.total) && root.total > 0)
 })
+
+test("hostMountPaths selects mappings visible inside the container", { skip }, () => {
+  const mounts = [
+    { device: "/dev/sda2", mountpoint: "/host", fstype: "ext4" },
+    { device: "/dev/nvme0n1p1", mountpoint: "/host/ssd", fstype: "fuseblk" },
+    { device: "//192.168.5.88/AI", mountpoint: "/host/mnt/nas/AI", fstype: "cifs" },
+    { device: "proc", mountpoint: "/proc", fstype: "proc" },
+    { device: "tmpfs", mountpoint: "/host/run", fstype: "tmpfs" },
+  ]
+  assert.deepEqual(agent.hostMountPaths(mounts), ["/host", "/host/ssd", "/host/mnt/nas/AI"])
+})

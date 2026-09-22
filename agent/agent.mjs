@@ -154,7 +154,7 @@ export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
 }
 
 const PSEUDO_FS_RE = /^(proc|sysfs|devtmpfs|tmpfs|devpts|cgroup2?|efivarfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|ramfs|nsfs|overlay|squashfs|fuse|fuse\.[\w.]+|rpc_pipefs|selinuxfs)$/i
-const SKIP_HOST_MOUNT_RE = /^\/(proc|sys|dev|run|snap|var\/lib\/docker|var\/lib\/containers)(\/|$)/
+const SKIP_HOST_MOUNT_RE = /^\/(?:host\/)?(?:proc|sys|dev|run|snap|var\/lib\/docker|var\/lib\/containers)(?:\/|$)/
 
 export function parseHostMounts(text, limit = 16) {
   const rows = []
@@ -174,11 +174,19 @@ export function parseHostMounts(text, limit = 16) {
   return rows
 }
 
+export function hostMountPaths(mounts) {
+  return (Array.isArray(mounts) ? mounts : [])
+    .filter(item => !PSEUDO_FS_RE.test(String(item?.fstype || "")))
+    .filter(item => item?.mountpoint === "/host" || String(item?.mountpoint || "").startsWith("/host/"))
+    .map(item => item.mountpoint)
+}
+
 async function collectDockerHostDisks() {
   if (process.platform !== "linux" || !fssync.existsSync("/host")) return null
-  const mounts = parseHostMounts(await fs.readFile("/host/proc/mounts", "utf8").catch(() => ""))
-  if (!mounts.length) return null
-  const paths = mounts.map(item => item.mountpoint === "/" ? "/host" : `/host${item.mountpoint}`)
+  // 容器内 /proc/self/mounts 已把宿主机挂载映射为 /host<挂载点>；直接使用这些路径
+  const mounts = parseHostMounts(await fs.readFile("/proc/self/mounts", "utf8").catch(() => ""))
+  const paths = hostMountPaths(mounts)
+  if (!paths.length) return null
   const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000)
   return Array.isArray(rows) && rows.length ? rows : null
 }
