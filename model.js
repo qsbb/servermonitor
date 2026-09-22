@@ -105,10 +105,10 @@ async function atomicWriteJson(file, payload) {
   await fs.rename(tmp, file)
 }
 
-function isEmptySnapshot(snap) {
+export function isEmptySnapshot(snap) {
   if (!snap || typeof snap !== "object") return true
   const hasCpu = snap.cpu?.usage !== null || snap.cpu?.cores !== null || snap.cpu?.model !== null
-  const hasMem = snap.mem?.total !== null || snap.mem?.used !== null
+  const hasMem = snap.mem?.total !== null || snap.mem?.used !== null || snap.mem?.available !== null
   const hasDisk = Array.isArray(snap.disks) && snap.disks.length > 0
   const hasGpu = Array.isArray(snap.gpus) && snap.gpus.length > 0
   const hasOs = snap.os?.hostname !== null || snap.os?.platform !== null
@@ -265,7 +265,7 @@ function sanitizeServerName(value) {
     .slice(0, 32)
 }
 
-function sanitizeSnapshot(body) {
+export function sanitizeSnapshot(body) {
   const os = body.os && typeof body.os === "object" ? body.os : {}
   const cpu = body.cpu && typeof body.cpu === "object" ? body.cpu : {}
   const mem = body.mem && typeof body.mem === "object" ? body.mem : {}
@@ -305,9 +305,7 @@ function sanitizeSnapshot(body) {
   let agentTs = numOrNull(body.agent_ts) || now
   if (agentTs > now + 5 * 60 * 1000 || agentTs < now - 365 * 24 * 60 * 60 * 1000) agentTs = now
 
-  let memUsed = clampNonNegative(mem.used)
-  const memTotal = clampNonNegative(mem.total)
-  if (memUsed !== null && memTotal !== null && memUsed > memTotal) memUsed = memTotal
+  const memory = resolveMemoryUsage(mem)
 
   let swapUsed = clampNonNegative(mem.swapUsed)
   const swapTotal = clampNonNegative(mem.swapTotal)
@@ -334,8 +332,9 @@ function sanitizeSnapshot(body) {
     },
     gpus,
     mem: {
-      used: memUsed,
-      total: memTotal,
+      used: memory.used,
+      total: memory.total,
+      available: memory.available,
       swapUsed,
       swapTotal,
     },
@@ -550,6 +549,48 @@ function computeUsagePercent(used, total) {
   return Math.max(0, Math.min(100, (u / t) * 100))
 }
 
+export function resolveMemoryUsage(mem = {}) {
+  const total = clampNonNegative(mem?.total)
+  let used = clampNonNegative(mem?.used)
+  let available = clampNonNegative(mem?.available)
+
+  if (total !== null) {
+    if (used !== null && used > total) used = total
+    if (available !== null && available > total) available = total
+  }
+
+  if (total === null || total <= 0) {
+    return {
+      used,
+      total,
+      available,
+      effectiveUsed: null,
+      effectiveAvailable: null,
+      source: null,
+    }
+  }
+
+  if (available !== null) {
+    return {
+      used,
+      total,
+      available,
+      effectiveUsed: total - available,
+      effectiveAvailable: available,
+      source: "available",
+    }
+  }
+
+  return {
+    used,
+    total,
+    available: null,
+    effectiveUsed: used,
+    effectiveAvailable: used === null ? null : total - used,
+    source: used === null ? null : "used",
+  }
+}
+
 function computeState(record, timeoutMs, now = Date.now()) {
   if (!record || !record.snap) return "pending"
   const age = now - (record.lastSeen || 0)
@@ -561,7 +602,8 @@ function computeSeverity(record, timeoutMs, now = Date.now()) {
   if (state !== "online") return state === "offline" ? 100 : 50
   const snap = record.snap
   const cpu = numOrNull(snap?.cpu?.usage)
-  const mem = computeUsagePercent(snap?.mem?.used, snap?.mem?.total)
+  const memory = resolveMemoryUsage(snap?.mem)
+  const mem = computeUsagePercent(memory.effectiveUsed, memory.total)
   const disk = Array.isArray(snap?.disks) ? maxPercent(snap.disks.map(d => computeUsagePercent(d.used, d.total)).filter(v => v !== null)) : null
   const gpu = Array.isArray(snap?.gpus) ? maxPercent(snap.gpus.map(g => numOrNull(g.usage)).filter(v => v !== null)) : null
   return Math.max(cpu ?? 0, mem ?? 0, disk ?? 0, gpu ?? 0)
@@ -619,8 +661,9 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
       ].filter(Boolean).join(" · ") || "—"
     : "—"
 
-  const memUsed = numOrNull(snap?.mem?.used)
-  const memTotal = numOrNull(snap?.mem?.total)
+  const memory = resolveMemoryUsage(snap?.mem)
+  const memUsed = memory.effectiveUsed
+  const memTotal = memory.total
   const memPct = computeUsagePercent(memUsed, memTotal)
   const memText = snap ? `${formatSizeGB(memUsed)} / ${formatSizeGB(memTotal)}` : "—"
   const swapText = snap
@@ -712,6 +755,8 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     cpuText,
     cpuCoresText,
     memText,
+    memAvailable: memory.effectiveAvailable,
+    memSource: memory.source,
     swapText,
     memPct,
     memColor: severityColor(memPct ?? 0),
@@ -1124,11 +1169,60 @@ export async function loadPersistedSnapshotFile() {
   })
 }
 
-export function makeAgentCommand({ baseUrl, name, token, interval = 10, path = "/servermonitor/report" }) {
-  const url = String(baseUrl || "").replace(/\/+$/, "") + path
+export function normalizeReportUrl(value, path = "/servermonitor/report") {
+  const input = String(value || "").trim()
+  let url
+  try {
+    url = new URL(input)
+  } catch {
+    throw new Error("上报地址格式错误，请填写以 http:// 或 https:// 开头的地址")
+  }
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("上报地址仅支持 http:// 或 https://")
+  }
+  if (url.username || url.password) throw new Error("上报地址不能包含用户名或密码")
+  if (url.search || url.hash) throw new Error("上报地址不能包含查询参数或锚点")
+
+  const pathname = url.pathname.replace(/\/+$/, "")
+  const isReportPath = /\/(?:servermonitor|server-monitor)\/report$/.test(pathname)
+  const reportPath = isReportPath ? pathname : `${pathname}${path}`
+  return `${url.origin}${reportPath || path}`
+}
+
+export function parseAddServerExtra(value) {
+  const parts = String(value || "").trim().split(/\s+/).filter(Boolean)
+  const first = parts[0] || ""
+  const hasAddress = /^[a-z][a-z0-9+.-]*:\/\//i.test(first)
+  return {
+    requestedAddress: hasAddress ? parts.shift() : "",
+    note: parts.join(" "),
+  }
+}
+
+export function makeAgentCommand({ baseUrl, reportUrl, name, token, interval = 10, path = "/servermonitor/report" }) {
+  const url = normalizeReportUrl(reportUrl || baseUrl, path)
   return [
     `node agent.mjs --name ${JSON.stringify(String(name))} --token ${JSON.stringify(String(token))} --report-url ${JSON.stringify(url)} --interval ${JSON.stringify(String(interval))}`,
   ].join(" ")
+}
+
+export function buildAddServerReply({ name, note = "", token, reportUrl, command }) {
+  return [
+    "【服务器添加成功】",
+    "",
+    `名称：${name}`,
+    note ? `备注：${note}` : null,
+    `上报地址：${reportUrl}`,
+    `专属令牌：${token}`,
+    "",
+    "请进入服务器的 agent 目录并执行：",
+    "",
+    command,
+    "",
+    "启动后发送「#服务器状态」查看上报结果。",
+    "",
+    `注意：请勿公开专属令牌；上报地址必须能被 ${name} 访问。`,
+  ].filter(line => line !== null).join("\n")
 }
 
 export function sortEntries(entries) {

@@ -9,7 +9,7 @@ import { createInterface } from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
 const execFileAsync = promisify(execFile)
-const AGENT_VERSION = "0.1.17"
+const AGENT_VERSION = "0.1.18"
 
 const THIS_FILE = fileURLToPath(import.meta.url)
 const EXE_DIR = process.pkg ? path.dirname(process.execPath) : path.dirname(THIS_FILE)
@@ -391,6 +391,7 @@ class Collector {
         ? {
             used: gb(mem.used),
             total: gb(mem.total),
+            available: gb(mem.available),
             swapUsed: gb(mem.swapused),
             swapTotal: gb(mem.swaptotal),
           }

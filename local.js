@@ -44,6 +44,25 @@ function gb(value, digits = 1) {
   return +(n / 1024 ** 3).toFixed(digits)
 }
 
+export function parseLinuxMemAvailable(text) {
+  const match = String(text || "").match(/^MemAvailable:\s+(\d+)\s+kB$/m)
+  if (!match) return null
+  const kilobytes = Number(match[1])
+  return Number.isFinite(kilobytes) ? kilobytes * 1024 : null
+}
+
+export async function getLinuxMemAvailableBytes({
+  platform = process.platform,
+  readFile = fs.readFile,
+} = {}) {
+  if (platform !== "linux") return null
+  try {
+    return parseLinuxMemAvailable(await readFile("/proc/meminfo", "utf8"))
+  } catch {
+    return null
+  }
+}
+
 async function safe(fn, fallback = null) {
   try {
     return await fn()
@@ -314,7 +333,7 @@ async function collectLoad() {
 }
 
 async function collectSnapshot() {
-  const [cpuUsage, cpuTemp, gpus, cpuPower, net, disks, load] = await Promise.all([
+  const [cpuUsage, cpuTemp, gpus, cpuPower, net, disks, load, memAvailable] = await Promise.all([
     sampleCpuUsage(),
     collectCpuTempLinux(),
     collectGpu(),
@@ -322,6 +341,7 @@ async function collectSnapshot() {
     collectNetwork(),
     collectDisk(),
     collectLoad(),
+    getLinuxMemAvailableBytes(),
   ])
 
   return {
@@ -347,6 +367,7 @@ async function collectSnapshot() {
     mem: {
       used: +( (os.totalmem() - os.freemem()) / 1024 ** 3 ).toFixed(1),
       total: +(os.totalmem() / 1024 ** 3).toFixed(1),
+      available: gb(memAvailable),
       swapUsed: null,
       swapTotal: null,
     },

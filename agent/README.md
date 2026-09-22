@@ -51,6 +51,13 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main
 npm install --omit=dev
 ```
 
+## 内存统计口径
+
+- agent 保留 `mem.used` 和 `mem.total`，并额外上报可选的 `mem.available`。
+- Linux 下 `systeminformation.mem().available` 对应系统的 `MemAvailable`，面板使用 `total - available` 表示实际内存压力，避免把可回收 page cache 当成正在占用。
+- 无法获得可信 `available` 时传 `null`，服务端会回退到旧的 `used` 口径；不要用 `total - used` 伪造该字段。
+- Docker/cgroup 限额识别不属于当前实现，容器中仍可能看到宿主机口径。
+
 ## 命令行启动
 
 一次性上传：

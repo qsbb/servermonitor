@@ -17,7 +17,10 @@ import {
   listPendingTokens,
   scanOffline as scanOfflineModel,
   persist as persistModel,
+  buildAddServerReply,
   makeAgentCommand,
+  normalizeReportUrl,
+  parseAddServerExtra,
 } from "./model.js"
 import { initServerMonitorRoutes } from "./server.js"
 
@@ -212,7 +215,7 @@ export class servermonitor extends plugin {
       `#服务器状态帮助        查看本帮助`,
       `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态令牌        查看共享上报 token`,
-      `#服务器状态添加 <名称>  主人私聊添加服务器`,
+      `#服务器状态添加 <名称> [上报地址] [备注]  主人私聊添加服务器`,
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
       `#服务器状态改名 <旧名> <新名>  修改服务器名称`,
@@ -270,33 +273,29 @@ export class servermonitor extends plugin {
     const text = getMessageText(this.e)
     const args = parseCommandArg(text, /^#?服务器状态添加\s+(\S{1,32})(?:\s+(.+))?$/)
     const name = args?.[0]?.trim()
-    const note = args?.[1]?.trim() || ""
+    const { requestedAddress, note } = parseAddServerExtra(args?.[1])
     if (!name) return false
     if (this.e.isGroup) {
       return this.reply("为保护 token，请私聊我执行此命令")
     }
 
     try {
+      const configuredAddress = String(cfg?.server?.url || "http://127.0.0.1:2536")
+      const reportUrl = normalizeReportUrl(requestedAddress || configuredAddress)
       const item = await addServer(name, note)
-      const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536")
       const command = makeAgentCommand({
-        baseUrl,
+        reportUrl,
         name: item.name,
         token: item.token,
         interval: 10,
       })
-      const hint = baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1")
-        ? "提示：servermonitor 复用 Yunzai HTTP 服务端口，只新增 /servermonitor/report 路径；当前地址是本机地址，请改成 agent 能访问到的公网/内网地址。"
-        : "提示：servermonitor 复用 Yunzai HTTP 服务端口，只新增 /servermonitor/report 路径，不额外占用端口。"
-      return this.reply([
-        `已添加服务器【${item.name}】`,
-        item.note ? `备注：${item.note}` : null,
-        `token：${item.token}`,
-        `上报接口：${baseUrl.replace(/\/+$/, "")}/servermonitor/report`,
-        `请在服务器的 agent 目录中执行以下命令：`,
+      return this.reply(buildAddServerReply({
+        name: item.name,
+        note: item.note,
+        token: item.token,
+        reportUrl,
         command,
-        hint || null,
-      ].filter(Boolean).join("\n"))
+      }))
     } catch (err) {
       return this.reply(`添加失败：${err.message || err}`)
     }

@@ -1,8 +1,11 @@
 {
   "name": "servermonitor-yunzai-plugin",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "type": "module",
   "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
   "description": "TRSS-Yunzai multi-server status monitor plugin",
   "license": "MIT"
 }
