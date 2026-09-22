@@ -193,3 +193,13 @@ test("hostMountPaths selects mappings visible inside the container", { skip }, (
   ]
   assert.deepEqual(agent.hostMountPaths(mounts), ["/host", "/host/ssd", "/host/mnt/nas/AI"])
 })
+
+test("hostMountPaths accepts both container and host mountpoint forms", { skip }, () => {
+  const mounts = [
+    { device: "/dev/sda2", mountpoint: "/", fstype: "ext4" },
+    { device: "/dev/nvme0n1p1", mountpoint: "/ssd", fstype: "fuseblk" },
+    { device: "//192.168.5.88/AI", mountpoint: "/mnt/nas/AI", fstype: "cifs" },
+    { device: "tmpfs", mountpoint: "/run", fstype: "tmpfs" },
+  ]
+  assert.deepEqual(agent.hostMountPaths(mounts), ["/host", "/host/ssd", "/host/mnt/nas/AI"])
+})

@@ -177,15 +177,19 @@ export function parseHostMounts(text, limit = 16) {
 export function hostMountPaths(mounts) {
   return (Array.isArray(mounts) ? mounts : [])
     .filter(item => !PSEUDO_FS_RE.test(String(item?.fstype || "")))
-    .filter(item => item?.mountpoint === "/host" || String(item?.mountpoint || "").startsWith("/host/"))
-    .map(item => item.mountpoint)
+    .map(item => String(item?.mountpoint || ""))
+    .filter(mountpoint => mountpoint.startsWith("/"))
+    // /host/proc/mounts 可能给出 /host/xxx，也可能给出宿主机原始路径；统一成容器内可访问路径
+    .map(mountpoint => mountpoint === "/" ? "/host" : (mountpoint.startsWith("/host") ? mountpoint : `/host${mountpoint}`))
 }
 
 async function collectDockerHostDisks() {
   if (process.platform !== "linux" || !fssync.existsSync("/host")) return null
-  // 容器内 /proc/self/mounts 已把宿主机挂载映射为 /host<挂载点>；直接使用这些路径
-  const mounts = parseHostMounts(await fs.readFile("/proc/self/mounts", "utf8").catch(() => ""))
-  const paths = hostMountPaths(mounts)
+  // /host/proc/mounts 才能看到宿主机全部挂载；/proc/self/mounts 在 exec 进程里可能只有 /host
+  const mounts = parseHostMounts(await fs.readFile("/host/proc/mounts", "utf8").catch(() => ""))
+  const paths = [...new Set(hostMountPaths(mounts))].filter(item => {
+    try { fssync.accessSync(item); return true } catch { return false }
+  })
   if (!paths.length) return null
   const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000)
   return Array.isArray(rows) && rows.length ? rows : null
