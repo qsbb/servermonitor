@@ -1,5 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs/promises"
 import { basicConfig, runInTempRepo } from "./helpers/temp-repo.mjs"
 import {
   buildAddServerReply,
@@ -71,4 +72,16 @@ console.log("__RESULT__" + JSON.stringify({
   assert.equal(result.name, "本机")
   assert.ok(result.firstMs >= 120, `first collection should sample CPU: ${result.firstMs}ms`)
   assert.ok(result.secondMs < 100, `second call should hit the cache: ${result.secondMs}ms`)
+})
+
+test("index.js declares the unified delete and incomplete-command rules", async () => {
+  const source = await fs.readFile(new URL("../index.js", import.meta.url), "utf8")
+  const ruleLines = source.split("\n").filter(line => line.includes("fnc:"))
+  assert.ok(ruleLines.some(line => line.includes("deleteTarget") && line.includes("删除服务器")), "missing deleteTarget rule")
+  assert.equal(ruleLines.filter(line => line.includes('fnc: "usage"')).length, 6, "expected 6 fallback usage rules")
+  assert.ok(ruleLines.some(line => line.includes("添加$") && line.includes('fnc: "usage"')))
+  assert.ok(ruleLines.some(line => line.includes("绑定$") && line.includes('fnc: "usage"')))
+  assert.ok(ruleLines.some(line => line.includes("改名") && line.includes('fnc: "usage"')))
+  assert.ok(ruleLines.some(line => line.includes("命令$") && line.includes('fnc: "usage"')))
+  assert.ok(ruleLines.some(line => line.includes("删除$") && line.includes('fnc: "usage"')))
 })
