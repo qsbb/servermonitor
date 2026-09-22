@@ -117,8 +117,10 @@ jobs:
           if (-not $failed) { throw "installer should have failed on a syntax error in the staged agent" }
           $after = Get-Content (Join-Path $install "agent.mjs") -Raw
           if ($after -ne $before) { throw "staging failure must not touch the installed agent" }
-          $newLines = (Get-Content $env:STUB_NSSM_LOG).Count
-          if ($newLines -ne $logLines) { throw "staging failure must not call nssm" }
+          $newLines = Get-Content $env:STUB_NSSM_LOG | Select-Object -Skip $logLines
+          foreach ($line in $newLines) {
+            if ($line -notmatch "^status ci-agent") { throw "staging failure must not touch the service (saw: $line)" }
+          }
 
       - name: Failed start rolls back to the previous code
         shell: pwsh
