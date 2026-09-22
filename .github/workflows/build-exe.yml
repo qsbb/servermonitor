@@ -42,8 +42,18 @@ jobs:
           $exe = "dist/servermonitor-agent.exe"
           if (-not (Test-Path $exe)) { throw "missing $exe" }
           if ((Get-Item $exe).Length -lt 10MB) { throw "exe too small" }
-          & $exe --name ci-smoke --dry-run | Out-Null
+          $output = & $exe --name ci-smoke --dry-run
           if ($LASTEXITCODE -ne 0) { throw "exe dry-run failed with $LASTEXITCODE" }
+          $raw = $output -join "`n"
+          if ($raw -match "undefined") { throw "dry-run output contains 'undefined'" }
+          $snap = $raw | ConvertFrom-Json
+          if (-not $snap.mem) { throw "missing mem block" }
+          if (-not $snap.mem.total -or $snap.mem.total -le 0) { throw "invalid mem.total: $($snap.mem.total)" }
+          if ($null -eq $snap.mem.available) { throw "mem.available is null on Windows" }
+          if ($snap.mem.available -gt $snap.mem.total) { throw "mem.available $($snap.mem.available) exceeds total $($snap.mem.total)" }
+          if (-not $snap.disks -or @($snap.disks).Count -lt 1) { throw "no disks collected" }
+          if (-not $snap.net) { throw "missing net block" }
+          Write-Host ("smoke ok: mem={0}G/{1}G available={2}G disks={3} iface={4}" -f $snap.mem.used, $snap.mem.total, $snap.mem.available, @($snap.disks).Count, $snap.net.iface)
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
