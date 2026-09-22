@@ -7,9 +7,11 @@ REPO_URL="$DEFAULT_REPO_URL"
 BRANCH="${BRANCH:-main}"
 AUTO_GIT_MIRROR="${AUTO_GIT_MIRROR:-1}"
 GIT_MIRROR_PROBE_TIMEOUT="${GIT_MIRROR_PROBE_TIMEOUT:-5}"
+GIT_VERIFY_TIMEOUT="${GIT_VERIFY_TIMEOUT:-15}"
 GIT_CLONE_ATTEMPTS="${GIT_CLONE_ATTEMPTS:-3}"
 GIT_CLONE_TIMEOUT="${GIT_CLONE_TIMEOUT:-300}"
 REPO_MIRRORS="${REPO_MIRRORS:-https://github.com/qsbb/servermonitor.git,https://ghfast.top/https://github.com/qsbb/servermonitor.git,https://gh-proxy.com/https://github.com/qsbb/servermonitor.git,https://gitclone.com/github.com/qsbb/servermonitor.git,https://mirror.ghproxy.com/https://github.com/qsbb/servermonitor.git}"
+AUTO_SELECTED_MIRROR=0
 
 now_ms() {
   local ts
@@ -76,11 +78,35 @@ select_repo_url() {
 
   if [[ -n "$best" ]]; then
     REPO_URL="$best"
+    AUTO_SELECTED_MIRROR=1
   else
     REPO_URL="$DEFAULT_REPO_URL"
     echo "[servermonitor-agent] all git mirror probes failed, fallback REPO_URL=$REPO_URL"
   fi
   echo "[servermonitor-agent] selected REPO_URL=$REPO_URL"
+}
+
+verify_clone_matches_official() {
+  local dest="$1" cloned official
+  [[ "${AUTO_SELECTED_MIRROR:-0}" == "1" ]] || return 0
+  cloned="$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)"
+  if command -v timeout >/dev/null 2>&1; then
+    official="$(timeout "${GIT_VERIFY_TIMEOUT}s" git ls-remote "$DEFAULT_REPO_URL" "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
+  else
+    official="$(git ls-remote "$DEFAULT_REPO_URL" "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
+  fi
+  if [[ -z "$official" ]]; then
+    echo "[servermonitor-agent] warning: cannot verify mirror freshness against official repo; continuing" >&2
+    return 0
+  fi
+  if [[ -n "$cloned" && "$cloned" != "$official" ]]; then
+    echo "[servermonitor-agent] error: selected mirror is stale" >&2
+    echo "[servermonitor-agent]   mirror HEAD:   $cloned" >&2
+    echo "[servermonitor-agent]   official HEAD: $official" >&2
+    echo "[servermonitor-agent] set AUTO_GIT_MIRROR=0 or REPO_URL=$DEFAULT_REPO_URL to update from the official repo" >&2
+    return 1
+  fi
+  return 0
 }
 
 clone_repo() {
@@ -90,9 +116,15 @@ clone_repo() {
   for attempt in $(seq 1 "$GIT_CLONE_ATTEMPTS"); do
     rm -rf "$dest"
     if command -v timeout >/dev/null 2>&1; then
-      timeout "${GIT_CLONE_TIMEOUT}s" git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest" && return 0
+      if timeout "${GIT_CLONE_TIMEOUT}s" git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest"; then
+        verify_clone_matches_official "$dest" && return 0
+        return 1
+      fi
     else
-      git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest" && return 0
+      if git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$dest"; then
+        verify_clone_matches_official "$dest" && return 0
+        return 1
+      fi
     fi
     echo "[servermonitor-agent] clone attempt $attempt failed; retrying"
     sleep 2
