@@ -45,6 +45,14 @@ select_repo_url() {
     return 0
   fi
 
+  # 官方源可达时始终优先官方：第三方镜像可能滞后，导致“更新”实际安装旧版本
+  if probe_git_mirror "$DEFAULT_REPO_URL" >/dev/null 2>&1; then
+    REPO_URL="$DEFAULT_REPO_URL"
+    echo "[servermonitor-agent] official repo reachable, using $REPO_URL"
+    return 0
+  fi
+  echo "[servermonitor-agent] warning: official repo unreachable, falling back to third-party mirrors (content may lag)"
+
   local old_ifs candidate ms best best_ms
   best=""
   best_ms=999999999

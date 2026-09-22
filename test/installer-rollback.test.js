@@ -204,6 +204,44 @@ test("macos cutover failure rolls back to the previous agent", async () => {
   assert.match(await fs.readFile(path.join(installDir, "agent.mjs"), "utf8"), /old-agent/)
 })
 
+test("installers prefer the official repo even when a mirror answers faster", async () => {
+  const sandbox = await makeSandbox()
+  const gitLog = path.join(sandbox.dir, "git-url.log")
+  await writeExecutable(path.join(sandbox.bin, "git"), `#!/usr/bin/env bash
+if [[ "$1" == "ls-remote" ]]; then
+  url="\${@: -2:1}"
+  if [[ "$url" == "https://github.com/qsbb/servermonitor.git" ]]; then sleep 0.4; fi
+  exit 0
+fi
+if [[ "$1" == "clone" ]]; then
+  url="\${@: -2:1}"
+  dest="\${@: -1}"
+  echo "$url" >> "\${STUB_GIT_LOG:?}"
+  cp -a "\${STUB_UPSTREAM:?}" "$dest"
+  exit 0
+fi
+exit 1
+`)
+  const installDir = path.join(sandbox.dir, "opt", "servermonitor-agent")
+  const serviceDir = path.join(sandbox.dir, "systemd")
+  await seedInstall(installDir, 'console.log("old-agent")\n', { name: "web-01", token: "sm_old_token", reportUrl: "http://old/report" })
+  await fs.mkdir(serviceDir, { recursive: true })
+  await fs.writeFile(path.join(serviceDir, "servermonitor-agent.service"), 'Environment="SM_TOKEN=sm_old_token"\n')
+
+  const result = runInstaller("scripts/install-agent-linux.sh", sandbox, {
+    INSTALL_DIR: installDir,
+    SERVICE_DIR: serviceDir,
+    STUB_SYSTEMCTL_LOG: path.join(sandbox.dir, "systemctl.log"),
+    STUB_GIT_LOG: gitLog,
+    STUB_UPSTREAM: sandbox.upstream,
+    REPO_URL: "",
+    AUTO_GIT_MIRROR: "1",
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const urls = (await fs.readFile(gitLog, "utf8")).trim().split("\n")
+  assert.equal(urls[0], "https://github.com/qsbb/servermonitor.git")
+})
+
 test("installer rejects an unsafe INSTALL_DIR", async () => {
   const sandbox = await makeSandbox()
   const result = runInstaller("scripts/install-agent-linux.sh", sandbox, {
