@@ -145,14 +145,10 @@ jobs:
           $before = Get-Content (Join-Path $install "agent.mjs") -Raw
           $failed = $false
           try { & $script -InstallDir $install -ServiceName ci-agent -RepoUrl $upstream } catch { $failed = $true; Write-Host "expected failure: $_" }
-          Write-Host "--- nssm calls ---"
-          Get-Content $env:STUB_NSSM_LOG | Select-Object -Last 2 | ForEach-Object { Write-Host $_ }
-          $probe = Join-Path $env:RUNNER_TEMP "stub\nssm.cmd"
-          & $probe start probe-service | Out-Null
-          Write-Host "--- start exit code without the fail flag: $LASTEXITCODE ---"
-          $env:STUB_NSSM_FAIL_START = "1"
-          & $probe start probe-service | Out-Null
-          Write-Host "--- start exit code with the fail flag: $LASTEXITCODE ---"
+          if ($failed) {
+            Write-Host "--- last nssm calls ---"
+            Get-Content $env:STUB_NSSM_LOG | Select-Object -Last 4 | ForEach-Object { Write-Host $_ }
+          }
           if (-not $failed) { throw "installer should have failed when the service cannot start" }
           $after = Get-Content (Join-Path $install "agent.mjs") -Raw
           if ($after -ne $before) { throw "rollback did not restore the previous agent code" }
