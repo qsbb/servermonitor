@@ -387,10 +387,6 @@ export function makeToken() {
   return `sm_${crypto.randomBytes(16).toString("hex")}`
 }
 
-export function getReportPaths() {
-  return ["/servermonitor", "/server-monitor"]
-}
-
 export function getReportUrlPath() {
   return "/servermonitor/report"
 }

@@ -29,15 +29,12 @@ const MAX_REPORTS_PER_IP_MIN = 240
 const RATE_MAP_MAX = 10_000
 const RATE_SWEEP_MS = 5 * 60 * 1000
 const PENDING_TOKEN_RE = /^sm_[0-9a-f]{32}$/
+const LOCAL_SNAPSHOT_TTL_MS = 5_000
 
 let trustedProxyCache = []
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
-}
-
-function isFiniteNumber(value) {
-  return typeof value === "number" && Number.isFinite(value)
 }
 
 function numOrNull(value) {
@@ -451,7 +448,10 @@ function isLocalName(name) {
   return ["本机", "local", "localhost"].includes(value) || value === host
 }
 
-async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
+async function getCachedLocalSnapshot() {
+  const now = Date.now()
+  const cached = state.localSnapshot
+  if (cached && now - cached.at < LOCAL_SNAPSHOT_TTL_MS) return cached.snap
   let raw
   try {
     raw = await collectLocalSnapshot()
@@ -459,6 +459,12 @@ async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
     raw = buildBasicLocalSnapshot()
   }
   const snap = sanitizeSnapshot(raw || buildBasicLocalSnapshot())
+  state.localSnapshot = { at: now, snap }
+  return snap
+}
+
+async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
+  const snap = await getCachedLocalSnapshot()
   const host = snap.os?.hostname || snap.name || os.hostname()
   const conf = {
     name: "本机",
@@ -1219,20 +1225,6 @@ export async function flushPending() {
   return true
 }
 
-export async function loadPersistedSnapshotFile() {
-  await hydratePersisted()
-  return clone({
-    servers: [...state.records.entries()].map(([name, value]) => ({
-      name,
-      lastSeen: value.lastSeen,
-      state: value.state,
-      alertedAt: value.alertedAt,
-      updatedAt: value.updatedAt,
-      snap: value.snap,
-    })),
-  })
-}
-
 export function normalizeReportUrl(value, path = "/servermonitor/report") {
   const input = String(value || "").trim()
   let url
@@ -1263,6 +1255,33 @@ export function parseAddServerExtra(value) {
   }
 }
 
+export function looksLikeAddressWithoutScheme(value) {
+  const text = String(value || "").trim()
+  if (!text || /\s/.test(text)) return false
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return false
+  const hostWithDot = /^(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)(?::\d{1,5})?(?:\/\S*)?$/
+  const bareHostPort = /^[A-Za-z0-9-]+:\d{1,5}(?:\/\S*)?$/
+  return hostWithDot.test(text) || bareHostPort.test(text)
+}
+
+export function usageHintFor(text) {
+  const value = String(text || "")
+  if (/服务器状态添加/.test(value)) return "用法：#服务器状态添加 <名称> [上报地址] [备注]（主人私聊；地址需带 http:// 或 https://）"
+  if (/服务器状态绑定/.test(value)) return "用法：#服务器状态绑定 <token> 或 #服务器状态绑定 <名称> <token>（主人私聊）"
+  if (/服务器状态改名/.test(value)) return "用法：#服务器状态改名 <旧名> <新名>（主人私聊）"
+  if (/服务器状态命令/.test(value)) return "用法：#服务器状态命令 <名称>（主人私聊）"
+  if (/服务器状态删除|删除服务器/.test(value)) return "用法：#删除服务器 <名称|序号>（主人私聊；无参数会列出服务器）"
+  return "用法：#服务器状态帮助 查看全部命令"
+}
+
+export function parseDeleteTarget(text) {
+  const match = String(text || "").match(/^#?删除服务器\s*[+＋]?\s*(\S+)$/)
+  if (!match) return null
+  const target = match[1].trim()
+  if (!target) return null
+  return { target, isIndex: /^\d+$/.test(target) }
+}
+
 export function makeAgentCommand({ baseUrl, reportUrl, name, token, interval = 10, path = "/servermonitor/report" }) {
   const url = normalizeReportUrl(reportUrl || baseUrl, path)
   return [
@@ -1270,7 +1289,7 @@ export function makeAgentCommand({ baseUrl, reportUrl, name, token, interval = 1
   ].join(" ")
 }
 
-export function buildAddServerReply({ name, note = "", token, reportUrl, command }) {
+export function buildAddServerReply({ name, note = "", token, reportUrl, command, warning = "" }) {
   return [
     "【服务器添加成功】",
     "",
@@ -1286,6 +1305,7 @@ export function buildAddServerReply({ name, note = "", token, reportUrl, command
     "启动后发送「#服务器状态」查看上报结果。",
     "",
     `注意：请勿公开专属令牌；上报地址必须能被 ${name} 访问。`,
+    warning || null,
   ].filter(line => line !== null).join("\n")
 }
 

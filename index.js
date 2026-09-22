@@ -20,9 +20,13 @@ import {
   buildAddServerReply,
   buildServerCommand,
   buildServerCommandReply,
+  isLoopbackReportUrl,
+  looksLikeAddressWithoutScheme,
   makeAgentCommand,
   normalizeReportUrl,
   parseAddServerExtra,
+  parseDeleteTarget,
+  usageHintFor,
 } from "./model.js"
 import { initServerMonitorRoutes } from "./server.js"
 
@@ -33,17 +37,6 @@ const DELETE_CONFIRM_TTL = 5 * 60 * 1000
 
 function sortedServers(config) {
   return [...(config?.servers || [])].sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN"))
-}
-
-function serverIndexText(config) {
-  const servers = sortedServers(config)
-  if (!servers.length) return "当前没有已注册服务器"
-  return [
-    `已注册 ${servers.length} 台服务器：`,
-    ...servers.map((item, idx) => `${idx + 1}. ${item.name}${item.note ? ` · ${item.note}` : ""}`),
-    `删除示例：#删除服务器 1`,
-    `确认示例：#确认删除服务器 1`,
-  ].join("\n")
 }
 
 function getMessageText(e) {
@@ -95,10 +88,16 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态改名\\s+(\\S{1,32})\\s+(\\S{1,32})$", fnc: "rename", permission: "master", log: false },
         { reg: "^#?服务器状态删除\\s+(\\S{1,32})$", fnc: "del", permission: "master", log: false },
         { reg: "^#?删除服务器$", fnc: "deleteByIndex", permission: "master", log: false },
-        { reg: "^#?删除服务器\\s*[+＋]?\\s*(\\d+)$", fnc: "deleteByIndex", permission: "master", log: false },
+        { reg: "^#?删除服务器\\s*[+＋]?\\s*(\\S+)$", fnc: "deleteTarget", permission: "master", log: false },
         { reg: "^#?确认删除服务器$", fnc: "confirmDelete", permission: "master", log: false },
         { reg: "^#?确认删除服务器\\s*[+＋]?\\s*(\\d+)$", fnc: "confirmDelete", permission: "master", log: false },
         { reg: "^#?服务器状态插件更新$", fnc: "updatePlugin", permission: "master", log: false },
+        { reg: "^#?服务器状态添加$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态绑定$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态改名$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态改名\\s+\\S+$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态命令$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态删除$", fnc: "usage", permission: "master", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
       ],
@@ -217,17 +216,20 @@ export class servermonitor extends plugin {
       `#服务器状态列表        列出已注册服务器`,
       `#服务器状态帮助        查看本帮助`,
       `#服务器状态检查        查看插件加载和配置`,
-      `#服务器状态令牌        共享 token 已停用（迁移说明）`,
+      `#服务器状态添加 <名称> [上报地址] [备注]  主人私聊添加（地址需带 http://）`,
       `#服务器状态命令 <名称>  主人私聊重新获取 token 与启动命令`,
-      `#服务器状态添加 <名称> [上报地址] [备注]  主人私聊添加服务器`,
+      `#服务器状态绑定 <token> 或 <名称> <token>  主人私聊绑定`,
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
-      `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
-      `#服务器状态改名 <旧名> <新名>  修改服务器名称`,
-      `#删除服务器 <序号>      主人按序号选择要删除的服务器`,
-      `#确认删除服务器 <序号>  主人二次确认后删除服务器`,
+      `#服务器状态改名 <旧名> <新名>  主人私聊修改名称`,
+      `#删除服务器 <名称|序号> 主人删除（无参数列出服务器）`,
+      `#确认删除服务器 <序号>  主人二次确认删除`,
       `#服务器状态插件更新    主人更新插件代码`,
-      `#服务器状态删除 <名称>  主人按名称删除服务器`,
+      `#服务器状态令牌        共享 token 已停用（迁移说明）`,
     ].join("\n"))
+  }
+
+  async usage() {
+    return this.reply(usageHintFor(getMessageText(this.e)))
   }
 
   async check() {
@@ -290,10 +292,22 @@ export class servermonitor extends plugin {
     if (this.e.isGroup) {
       return this.reply("为保护 token，请私聊我执行此命令")
     }
+    if (!requestedAddress && looksLikeAddressWithoutScheme(note)) {
+      return this.reply([
+        "上报地址看起来缺少协议前缀：",
+        note,
+        "",
+        "请重发（地址必须以 http:// 或 https:// 开头）：",
+        `#服务器状态添加 ${name} http://${note} [备注]`,
+      ].join("\n"))
+    }
 
     try {
       const configuredAddress = String(cfg?.server?.url || "http://127.0.0.1:2536")
       const reportUrl = normalizeReportUrl(requestedAddress || configuredAddress)
+      const warning = isLoopbackReportUrl(reportUrl)
+        ? "警告：当前上报地址是回环地址，远程 agent 无法访问；请重新添加并填写公网/内网地址。"
+        : ""
       const item = await addServer(name, note, reportUrl)
       const command = makeAgentCommand({
         reportUrl,
@@ -307,6 +321,7 @@ export class servermonitor extends plugin {
         token: item.token,
         reportUrl,
         command,
+        warning,
       }))
     } catch (err) {
       return this.reply(`添加失败：${err.message || err}`)
@@ -354,18 +369,27 @@ export class servermonitor extends plugin {
     }
   }
 
-  async del() {
-    const text = getMessageText(this.e)
-    const args = parseCommandArg(text, /^#?服务器状态删除\s+(\S{1,32})$/)
-    const name = args?.[0]?.trim()
-    if (!name) return false
-
+  async _removeByName(name) {
+    const cleanName = String(name || "").trim()
+    if (!cleanName) return false
     try {
-      await removeServer(name)
-      return this.reply(`已删除服务器【${name}】`)
+      await removeServer(cleanName)
+      return this.reply(`已删除服务器【${cleanName}】`)
     } catch (err) {
       return this.reply(`删除失败：${err.message || err}`)
     }
+  }
+
+  async del() {
+    const args = parseCommandArg(getMessageText(this.e), /^#?服务器状态删除\s+(\S{1,32})$/)
+    return this._removeByName(args?.[0])
+  }
+
+  async deleteTarget() {
+    const parsed = parseDeleteTarget(getMessageText(this.e))
+    if (!parsed) return false
+    if (parsed.isIndex) return this.deleteByIndex()
+    return this._removeByName(parsed.target)
   }
 
   async deleteByIndex() {
@@ -374,7 +398,7 @@ export class servermonitor extends plugin {
     const config = await loadConfig()
 
     if (!args?.[0]) {
-      return this.reply(serverIndexText(config))
+      return this.reply(await listServersText())
     }
 
     const index = Number(args[0])
@@ -403,7 +427,7 @@ export class servermonitor extends plugin {
 
     if (!pending || Date.now() > pending.expireAt) {
       deleteConfirmations.delete(userId)
-      return this.reply("没有待确认的删除操作，请先发送：#删除服务器 <序号>")
+      return this.reply("没有待确认的删除操作，请先发送：#删除服务器 <名称|序号>")
     }
 
     if (args?.[0] && Number(args[0]) !== pending.index) {
