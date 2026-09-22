@@ -123,6 +123,12 @@ test("filterDisks collapses identical shares from the same file server", { skip 
   assert.deepEqual(disks.map(item => item.mount).sort(), ["/mnt/nas/a", "/mnt/nas/c", "/mnt/nfs1", "/mnt/other"])
 })
 
+test("coldStartBudget widens the first Windows collection but caps it", { skip }, () => {
+  assert.equal(agent.coldStartBudget(5000), 15000)
+  assert.equal(agent.coldStartBudget(8000), 20000)
+  assert.equal(agent.coldStartBudget(3000, 2, 10000), 6000)
+})
+
 test("isLoopbackReportUrl only flags addresses that cannot leave the machine", { skip }, () => {
   assert.equal(agent.isLoopbackReportUrl("http://127.0.0.1:2536/servermonitor/report"), true)
   assert.equal(agent.isLoopbackReportUrl("http://localhost:2536/servermonitor/report"), true)

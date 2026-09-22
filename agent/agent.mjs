@@ -245,7 +245,7 @@ async function collectDockerHostDisks() {
     try { fssync.accessSync(item); return true } catch { return false }
   })
   if (paths.length <= 1 && paths[0] === "/host") return null
-  const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000)
+  const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000, "df host mounts")
   return Array.isArray(rows) && rows.length ? rows : null
 }
 
@@ -271,18 +271,18 @@ export async function collectDisks() {
     }
   }
   if (process.platform === "linux") {
-    const rows = await safe(() => collectDiskLinuxDf(), null, 6000)
+    const rows = await safe(() => collectDiskLinuxDf(), null, 6000, "df")
     if (Array.isArray(rows)) return rows
   }
-  const raw = await safe(() => si.fsSize(), [], 5000)
+  const raw = await safe(() => si.fsSize(), [], 5000, "fsSize")
   return filterDisks(Array.isArray(raw) ? raw : [])
 }
 
 export async function collectNetwork() {
-  const interfaces = await safe(() => si.networkInterfaces(), [], 5000)
+  const interfaces = await safe(() => si.networkInterfaces(), [], 5000, "networkInterfaces")
   const names = (Array.isArray(interfaces) ? interfaces : []).map(item => item?.iface).filter(Boolean)
   // systeminformation 只接受逗号分隔字符串；传数组会静默返回空数组
-  const stats = await safe(() => si.networkStats(names.length ? names.join(",") : undefined), [], 8000)
+  const stats = await safe(() => si.networkStats(names.length ? names.join(",") : undefined), [], 8000, "networkStats")
   const iface = pickActiveInterface(Array.isArray(stats) ? stats : [])
   if (!iface) return null
   return {
@@ -312,19 +312,28 @@ function timeoutSignal(ms = 5000) {
   }
 }
 
-async function safe(fn, fallback = null, timeout = 5000) {
+// Windows 第一次 WMI / PowerShell 调用往往要好几秒，冷启动阶段给更宽的预算，
+// 否则首包会整块缺数据（GitHub runner 上实测 5 秒全部超时）。
+const COLD_START = process.platform === "win32" ? { pending: true } : null
+
+export function coldStartBudget(timeout, factor = 3, cap = 20000) {
+  return Math.min(timeout * factor, cap)
+}
+
+async function safe(fn, fallback = null, timeout = 5000, label = "") {
+  const budget = COLD_START?.pending ? coldStartBudget(timeout) : timeout
   let timer
   try {
     return await Promise.race([
       Promise.resolve().then(fn),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timeout ${timeout}ms`)), timeout)
+        timer = setTimeout(() => reject(new Error(`timeout ${budget}ms`)), budget)
         timer.unref?.()
       }),
     ])
   } catch (err) {
     if (/timeout/i.test(String(err?.message || ""))) {
-      console.warn(`[servermonitor-agent] collection timeout after ${timeout}ms`)
+      console.warn(`[servermonitor-agent] collection timeout after ${budget}ms${label ? ` (${label})` : ""}`)
     }
     return fallback
   } finally {
@@ -421,7 +430,7 @@ async function collectGpuFromLspci(timeout = 5000) {
 
 async function collectGpuFallback() {
   if (process.platform === "linux") return await collectGpuFromLspci()
-  const gfx = await safe(() => si.graphics(), null)
+  const gfx = await safe(() => si.graphics(), null, 5000, "graphics")
   const ctrls = filterGpuControllers(gfx?.controllers)
   if (!ctrls.length) return []
   const windowsAdapterRam = process.platform === "win32"
@@ -509,7 +518,7 @@ async function collectCpuTempWindows() {
 }
 
 async function collectCpuTemp() {
-  const temp = await safe(() => si.cpuTemperature(), null)
+  const temp = await safe(() => si.cpuTemperature(), null, 5000, "cpuTemperature")
   const main = num(temp?.main)
   if (main !== null && main > 0) return main
   const max = num(temp?.max)
@@ -566,7 +575,7 @@ export function parseWindowsAvailableMBytes(text) {
   return Number.isFinite(value) && value >= 0 ? value : null
 }
 
-async function collectWindowsMemAvailableBytes(timeout = 5000) {
+async function collectWindowsMemAvailableBytes(timeout = 8000) {
   if (process.platform !== "win32") return null
   const script = [
     "$v = $null",
@@ -602,8 +611,8 @@ class Collector {
     const now = Date.now()
     if (!force && this.staticCache && now - this.lastStaticAt < 60 * 60 * 1000) return this.staticCache
     const [cpu, osInfo] = await Promise.all([
-      safe(() => si.cpu(), null),
-      safe(() => si.osInfo(), null),
+      safe(() => si.cpu(), null, 5000, "cpu"),
+      safe(() => si.osInfo(), null, 5000, "osInfo"),
     ])
     this.staticCache = {
       cpu: {
@@ -626,8 +635,8 @@ class Collector {
     const now = Date.now()
     if (!force && this.fastCache && now - this.lastFastAt < 3_000) return this.fastCache
     const [load, mem, net] = await Promise.all([
-      safe(() => si.currentLoad(), null),
-      safe(() => si.mem(), null),
+      safe(() => si.currentLoad(), null, 5000, "cpu load"),
+      safe(() => si.mem(), null, 5000, "mem"),
       collectNetwork(),
     ])
     let availableBytes = mem?.available
@@ -668,7 +677,7 @@ class Collector {
       disks,
       cpuTemp: temp,
       gpus: Array.isArray(gpuList) ? gpuList.slice(0, 8) : gpuList,
-      cpuPower: await safe(() => collectCpuPowerLinux(this.raplPrev), null, 5000),
+      cpuPower: await safe(() => collectCpuPowerLinux(this.raplPrev), null, 5000, "cpuPower"),
     }
     this.lastSlowAt = now
     return this.slowCache
@@ -680,6 +689,7 @@ class Collector {
       this.refreshFast(),
       this.refreshSlow(),
     ])
+    if (COLD_START?.pending) COLD_START.pending = false
 
     return {
       v: 1,
