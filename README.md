@@ -81,7 +81,7 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main
 ```bash
 systemctl status servermonitor-agent --no-pager
 journalctl -u servermonitor-agent -n 30 --no-pager     # 应出现 uploaded
-grep -m1 AGENT_VERSION /opt/servermonitor/agent/agent.mjs   # 应为 0.1.19
+grep -m1 AGENT_VERSION /opt/servermonitor/agent/agent.mjs   # 应为 0.1.20
 sudo ls -l /opt/servermonitor/agent/servermonitor-agent.json   # 权限应为 600
 ```
 
