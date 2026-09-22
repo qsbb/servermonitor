@@ -36,6 +36,10 @@ jobs:
             "@echo off",
             'echo [fail=%STUB_NSSM_FAIL_START%] %*>>"%STUB_NSSM_LOG%"',
             'if "%1"=="status" (',
+            '  if "%STUB_NSSM_STOPPED%"=="1" (',
+            '    echo SERVICE_STOPPED',
+            '    exit /b 0',
+            '  )',
             '  if exist "%STUB_SERVICE_MARKER%" (',
             '    echo SERVICE_RUNNING',
             '    exit /b 0',
@@ -130,7 +134,7 @@ jobs:
         env:
           STUB_NSSM_LOG: ${{ runner.temp }}\nssm.log
           STUB_SERVICE_MARKER: ${{ runner.temp }}\service.marker
-          STUB_NSSM_FAIL_START: "1"
+          STUB_NSSM_STOPPED: "1"
         run: |
           $script = Join-Path $env:GITHUB_WORKSPACE "scripts\install-agent-windows.ps1"
           $install = Join-Path $env:RUNNER_TEMP "agent-install"
@@ -142,8 +146,13 @@ jobs:
           $failed = $false
           try { & $script -InstallDir $install -ServiceName ci-agent -RepoUrl $upstream } catch { $failed = $true; Write-Host "expected failure: $_" }
           Write-Host "--- nssm calls ---"
-          Get-Content $env:STUB_NSSM_LOG | Select-Object -Last 10 | ForEach-Object { Write-Host $_ }
-          Write-Host "--- fail flag: [$env:STUB_NSSM_FAIL_START] ---"
+          Get-Content $env:STUB_NSSM_LOG | Select-Object -Last 2 | ForEach-Object { Write-Host $_ }
+          $probe = Join-Path $env:RUNNER_TEMP "stub\nssm.cmd"
+          & $probe start probe-service | Out-Null
+          Write-Host "--- start exit code without the fail flag: $LASTEXITCODE ---"
+          $env:STUB_NSSM_FAIL_START = "1"
+          & $probe start probe-service | Out-Null
+          Write-Host "--- start exit code with the fail flag: $LASTEXITCODE ---"
           if (-not $failed) { throw "installer should have failed when the service cannot start" }
           $after = Get-Content (Join-Path $install "agent.mjs") -Raw
           if ($after -ne $before) { throw "rollback did not restore the previous agent code" }
