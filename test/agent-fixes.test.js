@@ -155,3 +155,30 @@ test("Docker disk usage follows df semantics (bfree, not bavail)", { skip }, () 
   assert.equal(agent.diskUsageFromStatfs({}), null)
   assert.equal(agent.diskUsageFromStatfs({ blocks: 0, bfree: 0, bsize: 4096 }), null)
 })
+
+test("parseHostMounts keeps real filesystems and skips pseudo/duplicates", { skip }, () => {
+  const sample = [
+    "proc /proc proc rw 0 0",
+    "tmpfs /run tmpfs rw 0 0",
+    "overlay / overlay rw 0 0",
+    "/dev/sda2 / ext4 rw 0 0",
+    "/dev/sda1 /boot/efi vfat rw 0 0",
+    "//192.168.5.88/AI /mnt/nas/AI cifs rw 0 0",
+    "/dev/sda2 /mnt/bind ext4 rw 0 0",
+    "/dev/nvme0n1p1 /ssd fuseblk rw 0 0",
+    "fuse /tmp/fuse fuse rw 0 0",
+  ].join("\n")
+  assert.deepEqual(agent.parseHostMounts(sample), [
+    { device: "/dev/sda2", mountpoint: "/", fstype: "ext4" },
+    { device: "/dev/sda1", mountpoint: "/boot/efi", fstype: "vfat" },
+    { device: "//192.168.5.88/AI", mountpoint: "/mnt/nas/AI", fstype: "cifs" },
+    { device: "/dev/nvme0n1p1", mountpoint: "/ssd", fstype: "fuseblk" },
+  ])
+})
+
+test("collectDiskLinuxDf maps explicit paths back to host mountpoints", { skip }, async () => {
+  const rows = await agent.collectDiskLinuxDf(["/"])
+  assert.ok(Array.isArray(rows) && rows.length >= 1)
+  const root = rows.find(item => item.mount === "/")
+  assert.ok(root && Number.isFinite(root.total) && root.total > 0)
+})

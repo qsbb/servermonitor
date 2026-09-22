@@ -135,8 +135,10 @@ export function filterDisks(list = []) {
     .slice(0, 8)
 }
 
-export async function collectDiskLinuxDf(timeout = 5000) {
-  const { stdout } = await execFileAsync("df", ["-kPTx", "squashfs"], { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
+export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
+  const args = ["-kPTx", "squashfs"]
+  if (paths.length) args.push("--", ...paths)
+  const { stdout } = await execFileAsync("df", args, { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
   const rows = []
   for (const line of String(stdout || "").split(/\r?\n/).slice(1)) {
     const fields = line.trim().split(/\s+/)
@@ -144,9 +146,41 @@ export async function collectDiskLinuxDf(timeout = 5000) {
     const totalKb = Number(fields[2])
     const usedKb = Number(fields[3])
     if (!Number.isFinite(totalKb) || !Number.isFinite(usedKb) || totalKb <= 0) continue
-    rows.push({ mount: fields.slice(6).join(" "), type: fields[1], used: usedKb * 1024, size: totalKb * 1024 })
+    const rawMount = fields.slice(6).join(" ")
+    const mount = rawMount === "/host" ? "/" : rawMount.replace(/^\/host(?=\/)/, "")
+    rows.push({ mount, type: fields[1], used: usedKb * 1024, size: totalKb * 1024 })
   }
   return filterDisks(rows)
+}
+
+const PSEUDO_FS_RE = /^(proc|sysfs|devtmpfs|tmpfs|devpts|cgroup2?|efivarfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|ramfs|nsfs|overlay|squashfs|fuse|fuse\.[\w.]+|rpc_pipefs|selinuxfs)$/i
+const SKIP_HOST_MOUNT_RE = /^\/(proc|sys|dev|run|snap|var\/lib\/docker|var\/lib\/containers)(\/|$)/
+
+export function parseHostMounts(text, limit = 16) {
+  const rows = []
+  const seen = new Set()
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 3) continue
+    const [device, mountpoint, fstype] = parts
+    if (!mountpoint.startsWith("/")) continue
+    if (PSEUDO_FS_RE.test(fstype)) continue
+    if (SKIP_HOST_MOUNT_RE.test(mountpoint)) continue
+    if (seen.has(device)) continue
+    seen.add(device)
+    rows.push({ device, mountpoint, fstype })
+    if (rows.length >= limit) break
+  }
+  return rows
+}
+
+async function collectDockerHostDisks() {
+  if (process.platform !== "linux" || !fssync.existsSync("/host")) return null
+  const mounts = parseHostMounts(await fs.readFile("/host/proc/mounts", "utf8").catch(() => ""))
+  if (!mounts.length) return null
+  const paths = mounts.map(item => item.mountpoint === "/" ? "/host" : `/host${item.mountpoint}`)
+  const rows = await safe(() => collectDiskLinuxDf(paths), null, 8000)
+  return Array.isArray(rows) && rows.length ? rows : null
 }
 
 export function diskUsageFromStatfs(stats) {
@@ -160,11 +194,15 @@ export function diskUsageFromStatfs(stats) {
 }
 
 export async function collectDisks() {
-  if (process.platform === "linux" && fssync.existsSync("/host") && typeof fs.statfs === "function") {
-    try {
-      const usage = diskUsageFromStatfs(await fs.statfs("/host"))
-      if (usage) return [{ mount: "/", used: gb(usage.used), total: gb(usage.total) }]
-    } catch {}
+  if (process.platform === "linux" && fssync.existsSync("/host")) {
+    const hostRows = await collectDockerHostDisks()
+    if (hostRows) return hostRows
+    if (typeof fs.statfs === "function") {
+      try {
+        const usage = diskUsageFromStatfs(await fs.statfs("/host"))
+        if (usage) return [{ mount: "/", used: gb(usage.used), total: gb(usage.total) }]
+      } catch {}
+    }
   }
   if (process.platform === "linux") {
     const rows = await safe(() => collectDiskLinuxDf(), null, 6000)
