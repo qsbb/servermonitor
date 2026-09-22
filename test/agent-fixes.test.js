@@ -91,3 +91,47 @@ test("pickActiveInterface prefers the busiest non-virtual interface", { skip }, 
     "lo",
   )
 })
+
+test("parses nvidia-smi values with locale decimal commas", { skip }, () => {
+  assert.equal(agent.parseNvidiaNumber("35,03 W"), 35)
+  assert.equal(agent.parseNvidiaNumber("35.03 W"), 35)
+  assert.equal(agent.parseNvidiaNumber("12282"), 12282)
+  assert.equal(agent.parseNvidiaNumber("62 %"), 62)
+  assert.equal(agent.parseNvidiaNumber("[N/A]"), null)
+  assert.equal(agent.parseNvidiaNumber("N/A"), null)
+  assert.equal(agent.parseNvidiaNumber(""), null)
+})
+
+test("filters virtual display adapters but keeps real GPUs", { skip }, () => {
+  const controllers = [
+    { model: "GameViewer Virtual Display Adapter" },
+    { model: "MuMu Virtual Display Adapter" },
+    { model: "Meta Virtual Monitor" },
+    { model: "Zako Display Adapter" },
+    { model: "Microsoft Basic Display Adapter" },
+    { model: "NVIDIA GeForce RTX 4070" },
+    { model: "AMD Radeon(TM) Graphics" },
+    { model: "Intel(R) Arc(TM) A770 Graphics" },
+  ]
+  assert.deepEqual(agent.filterGpuControllers(controllers).map(ctrl => ctrl.model), [
+    "NVIDIA GeForce RTX 4070",
+    "AMD Radeon(TM) Graphics",
+    "Intel(R) Arc(TM) A770 Graphics",
+  ])
+  assert.equal(agent.isVirtualGpuName("Sunshine Virtual Display"), true)
+  assert.equal(agent.isVirtualGpuName("NVIDIA GeForce RTX 4070"), false)
+})
+
+test("treats >=4GiB AdapterRAM values as untrusted on Windows", { skip }, () => {
+  assert.equal(agent.normalizeVram(4095, { windowsAdapterRam: true }), null)
+  assert.equal(agent.normalizeVram(4095), 4)
+  assert.equal(agent.normalizeVram(2048, { windowsAdapterRam: true }), 2)
+  assert.equal(agent.normalizeVram(12282), 12)
+})
+
+test("parses Windows available-memory probe output", { skip }, () => {
+  assert.equal(agent.parseWindowsAvailableMBytes("47550"), 47550)
+  assert.equal(agent.parseWindowsAvailableMBytes("47550\r\n"), 47550)
+  assert.equal(agent.parseWindowsAvailableMBytes(""), null)
+  assert.equal(agent.parseWindowsAvailableMBytes("abc"), null)
+})

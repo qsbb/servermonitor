@@ -58,6 +58,15 @@ npm install --omit=dev
 - 无法获得可信 `available` 时传 `null`，服务端会回退到旧的 `used` 口径；不要用 `total - used` 伪造该字段。
 - Docker/cgroup 限额识别不属于当前实现，容器中仍可能看到宿主机口径。
 
+## Windows 采集说明
+
+- 显存：NVIDIA 优先用 `nvidia-smi memory.total`；WMI `AdapterRAM` 是 32 位字段，≥4GiB 会截断，命中时显存置 `null`（显示 —）。
+- `nvidia-smi` 不一定在 PATH，Windows 下会先找 `%SystemRoot%\System32\nvidia-smi.exe`。
+- 中文区域 `nvidia-smi` 可能用逗号作小数点（如 `35,03 W`），解析时按本地数字格式处理，字段按 `, ` 分隔。
+- 虚拟显示适配器（GameViewer / MuMu / Meta Virtual / Zako / Sunshine / Parsec / DisplayLink / VirtualBox / VMware / Hyper-V / Microsoft Basic 等）会被过滤，避免当作真实显卡。
+- 内存可用量：Windows 下 Node `os.freemem()` 等价于系统 Available；异常时回退 `Win32_PerfFormattedData_PerfOS_Memory.AvailableMBytes` / `\Memory\Available Bytes`。不要用 `total - used` 反推。
+- 多卡占用率不使用 `GPU Engine phys_N` 序号硬套，避免多卡张冠李戴。
+
 ## 命令行启动
 
 一次性上传：

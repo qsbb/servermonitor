@@ -238,6 +238,7 @@ export class servermonitor extends plugin {
     const config = await loadConfig()
     const entries = await getEntries().catch(() => [])
     const pendingItems = await listPendingTokens().catch(() => [])
+    const badTokenCount = (config.servers || []).filter(item => !/^sm_[0-9a-f]{32}$/.test(String(item.token || ""))).length
     const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536").replace(/\/+$/, "")
     const reportUrl = `${baseUrl}${getReportUrlPath()}`
     return this.reply([
@@ -249,6 +250,7 @@ export class servermonitor extends plugin {
       `数据目录：${DATA_DIR}`,
       `注册服务器：${config.servers?.length || 0} 台`,
       `待绑定token：${pendingItems.length} 个`,
+      `token格式：${badTokenCount ? `${badTokenCount} 台不符合 sm_+32位hex（建议重新登记）` : "全部规范"}`,
       `当前展示：${entries.map(i => i.name).join("、") || "空"}`,
       `public_status：${config.public_status ? "true" : "false"}`,
       `include_local：${config.include_local ? "true" : "false"}`,

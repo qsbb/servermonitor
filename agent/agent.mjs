@@ -221,41 +221,73 @@ async function safe(fn, fallback = null, timeout = 5000) {
   }
 }
 
-async function collectGpuFromNvidiaSmi(timeout = 5000) {
-  try {
-    const { stdout } = await execFileAsync(
-      "nvidia-smi",
-      [
-        "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw",
-        "--format=csv,noheader,nounits",
-      ],
-      { timeout },
-    )
-    const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean)
-    const gpus = lines.map(line => {
-      const parts = line.split(",").map(i => i.trim())
-      const [model, usage, temp, memUsed, memTotal, power] = parts
-      return {
-        model: model || null,
-        usage: clipPercent(usage),
-        temp: num(temp),
-        memUsed: gibFromMiB(memUsed),
-        memTotal: gibFromMiB(memTotal),
-        power: num(power),
-      }
-    })
-    return gpus
-  } catch {
-    return null
-  }
+export function parseNvidiaNumber(value) {
+  const raw = String(value ?? "").trim().replace(/%$/, "").trim()
+  if (!raw || /^\[?n\/a\]?$/i.test(raw)) return null
+  const match = raw.match(/^[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)/)
+  if (!match) return null
+  const n = Number(match[0].replace(",", "."))
+  return Number.isFinite(n) ? +n.toFixed(1) : null
 }
 
-export function normalizeVram(value) {
+function nvidiaSmiCandidates() {
+  if (process.platform === "win32") {
+    const root = process.env.SystemRoot || process.env.windir || "C:\\Windows"
+    return [path.join(root, "System32", "nvidia-smi.exe"), "nvidia-smi"]
+  }
+  return ["nvidia-smi"]
+}
+
+async function collectGpuFromNvidiaSmi(timeout = 5000) {
+  const args = [
+    "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw",
+    "--format=csv,noheader,nounits",
+  ]
+  for (const exe of nvidiaSmiCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(exe, args, { timeout, windowsHide: true })
+      const lines = String(stdout || "").trim().split(/\r?\n/).filter(Boolean)
+      if (!lines.length) continue
+      return lines.map(line => {
+        // nvidia-smi 使用 ", " 分隔字段；中文区域小数点可能是逗号（如 35,03 W）
+        const parts = line.split(/,\s+/).map(i => i.trim())
+        const [model, usage, temp, memUsed, memTotal, power] = parts
+        return {
+          model: model || null,
+          usage: clipPercent(parseNvidiaNumber(usage)),
+          temp: parseNvidiaNumber(temp),
+          memUsed: gibFromMiB(parseNvidiaNumber(memUsed)),
+          memTotal: gibFromMiB(parseNvidiaNumber(memTotal)),
+          power: parseNvidiaNumber(power),
+        }
+      })
+    } catch {}
+  }
+  return null
+}
+
+export function normalizeVram(value, { windowsAdapterRam = false } = {}) {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return null
   if (n === 0) return 0
+  // Win32_VideoController.AdapterRAM 是 UInt32：>= 4GiB - 1MiB 一定是截断值，宁可不显示
+  if (windowsAdapterRam && n >= 4095) return null
   const gigabytes = +(n / 1024).toFixed(1)
   return gigabytes > 1024 ? null : gigabytes
+}
+
+const VIRTUAL_GPU_NAME_RE = /(virtual|virtio|vmware|virtualbox|hyper-v|microsoft basic|gameviewer|mumu|meta virtual|zako|sunshine|parsec|displaylink|usb display)/i
+const REAL_GPU_VENDOR_RE = /(nvidia|amd|radeon|intel|arc)/i
+
+export function isVirtualGpuName(name) {
+  const text = String(name || "").trim()
+  if (!text) return false
+  if (REAL_GPU_VENDOR_RE.test(text)) return false
+  return VIRTUAL_GPU_NAME_RE.test(text)
+}
+
+export function filterGpuControllers(list = []) {
+  return (Array.isArray(list) ? list : []).filter(ctrl => !isVirtualGpuName(ctrl?.model || ctrl?.name))
 }
 
 async function collectGpuFromLspci(timeout = 5000) {
@@ -278,14 +310,15 @@ async function collectGpuFromLspci(timeout = 5000) {
 async function collectGpuFallback() {
   if (process.platform === "linux") return await collectGpuFromLspci()
   const gfx = await safe(() => si.graphics(), null)
-  const ctrls = Array.isArray(gfx?.controllers) ? gfx.controllers : []
+  const ctrls = filterGpuControllers(gfx?.controllers)
   if (!ctrls.length) return []
+  const windowsAdapterRam = process.platform === "win32"
   return ctrls.map(ctrl => ({
     model: ctrl.model || ctrl.name || null,
     usage: clipPercent(ctrl.utilizationGpu ?? ctrl.utilization ?? null),
     temp: num(ctrl.temperatureGpu ?? ctrl.temperature ?? null),
-    memUsed: normalizeVram(ctrl.memoryUsed ?? ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null),
-    memTotal: normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? ctrl.memoryTotal ?? null),
+    memUsed: normalizeVram(ctrl.memoryUsed ?? ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null, { windowsAdapterRam }),
+    memTotal: normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? ctrl.memoryTotal ?? null, { windowsAdapterRam }),
     power: num(ctrl.powerDraw ?? ctrl.power ?? null),
   }))
 }
@@ -414,6 +447,30 @@ async function collectCpuPowerLinux(raplPrev) {
   return +total.toFixed(1)
 }
 
+export function parseWindowsAvailableMBytes(text) {
+  const match = String(text || "").match(/-?\d+(?:[.,]\d+)?/)
+  if (!match) return null
+  const value = Number(match[0].replace(",", "."))
+  return Number.isFinite(value) && value >= 0 ? value : null
+}
+
+async function collectWindowsMemAvailableBytes(timeout = 5000) {
+  if (process.platform !== "win32") return null
+  const script = [
+    "$v = $null",
+    "try { $v = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes } catch {}",
+    "if ($null -eq $v) { try { $v = (Get-Counter '\\Memory\\Available Bytes' -ErrorAction Stop).CounterSamples[0].CookedValue / 1MB } catch {} }",
+    "if ($null -ne $v) { [math]::Round([double]$v, 0) }",
+  ].join("; ")
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout, windowsHide: true })
+    const mib = parseWindowsAvailableMBytes(stdout)
+    return mib === null ? null : mib * 1024 * 1024
+  } catch {
+    return null
+  }
+}
+
 class Collector {
   constructor({ slowInterval = 30_000 } = {}) {
     this.slowInterval = Math.max(5_000, slowInterval)
@@ -461,6 +518,13 @@ class Collector {
       safe(() => si.mem(), null),
       collectNetwork(),
     ])
+    let availableBytes = mem?.available
+    // Windows 下 Node 的 os.freemem() 走 GlobalMemoryStatusEx，语义已是 Available；
+    // 仅在缺失/为 0 时用性能计数器兜底，绝不用 total - used 反推。
+    if (process.platform === "win32" && (!Number.isFinite(Number(availableBytes)) || Number(availableBytes) <= 0)) {
+      const fallbackAvailable = await collectWindowsMemAvailableBytes()
+      if (fallbackAvailable !== null) availableBytes = fallbackAvailable
+    }
     this.fastCache = {
       load: process.platform === "win32" ? null : formatLoad(os.loadavg()),
       cpuUsage: clipPercent(load?.currentLoad),
@@ -468,7 +532,7 @@ class Collector {
         ? {
             used: gb(mem.used),
             total: gb(mem.total),
-            available: gb(mem.available),
+            available: gb(availableBytes),
             swapUsed: gb(mem.swapused),
             swapTotal: gb(mem.swaptotal),
           }
