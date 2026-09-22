@@ -21,7 +21,8 @@ jobs:
 
       - name: Install agent dependencies
         working-directory: agent
-        run: npm ci --omit=dev
+        # 需要 devDependencies：esbuild + pkg 是打包 exe 的工具
+        run: npm ci
 
       - name: Check source and package versions match
         shell: pwsh
