@@ -729,14 +729,21 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     : "—"
   const cpuCoresText = snap ? (numOrNull(snap.cpu?.cores) ?? "—") : "—"
 
-  const netLines = snap
-    ? [
-        snap.net?.rxSec !== null && snap.net?.rxSec !== undefined ? `↓ ${formatRateMB(snap.net.rxSec)}` : null,
-        snap.net?.txSec !== null && snap.net?.txSec !== undefined ? `↑ ${formatRateMB(snap.net.txSec)}` : null,
-        snap.net?.rxTotal !== null && snap.net?.rxTotal !== undefined ? `累计 ↓ ${formatSizeGB(snap.net.rxTotal)}` : null,
-        snap.net?.txTotal !== null && snap.net?.txTotal !== undefined ? `累计 ↑ ${formatSizeGB(snap.net.txTotal)}` : null,
-      ].filter(Boolean)
-    : []
+  // 网络固定两行：实时（上传/下载）与累计（上传/下载），避免四行把卡片撑高
+  const netLines = []
+  if (snap) {
+    const rateParts = [
+      snap.net?.rxSec !== null && snap.net?.rxSec !== undefined ? `↓ ${formatRateMB(snap.net.rxSec)}` : null,
+      snap.net?.txSec !== null && snap.net?.txSec !== undefined ? `↑ ${formatRateMB(snap.net.txSec)}` : null,
+    ].filter(Boolean)
+    if (rateParts.length) netLines.push(`实时 ${rateParts.join(" · ")}`)
+
+    const totalParts = [
+      snap.net?.rxTotal !== null && snap.net?.rxTotal !== undefined ? `↓ ${formatSizeGB(snap.net.rxTotal)}` : null,
+      snap.net?.txTotal !== null && snap.net?.txTotal !== undefined ? `↑ ${formatSizeGB(snap.net.txTotal)}` : null,
+    ].filter(Boolean)
+    if (totalParts.length) netLines.push(`累计 ${totalParts.join(" · ")}`)
+  }
   const netText = netLines.length ? netLines.join(" · ") : (snap ? "无网络数据" : "—")
   const netIfaceText = snap ? (snap.net?.iface || "—") : "—"
 
