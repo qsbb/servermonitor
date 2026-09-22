@@ -1,0 +1,127 @@
+name: windows-installer-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/install-agent-windows.ps1"
+      - ".github/workflows/windows-installer-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare sandbox (fake repo, nssm and npm stubs)
+        shell: pwsh
+        run: |
+          $temp = $env:RUNNER_TEMP
+          $upstream = Join-Path $temp "upstream"
+          New-Item -ItemType Directory -Force -Path (Join-Path $upstream "agent") | Out-Null
+          [IO.File]::WriteAllText((Join-Path $upstream "agent\agent.mjs"), "console.log('fake-agent-v1')`n")
+          [IO.File]::WriteAllText((Join-Path $upstream "agent\package.json"), '{"name":"fake-agent","version":"0.0.0","type":"module","dependencies":{"systeminformation":"^5.24.0"}}')
+          git init -q -b main $upstream
+          git -C $upstream add -A
+          git -C $upstream -c user.email=ci@example.com -c user.name=ci commit -q -m v1
+
+          $stub = Join-Path $temp "stub"
+          New-Item -ItemType Directory -Force -Path $stub | Out-Null
+
+          $realNpm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+          if (-not $realNpm) { $realNpm = Get-Command npm }
+          $npmStub = "echo off`r`nif `"%STUB_NPM_FAIL%`"==`"1`" (echo stub npm failure 1>&2 & exit /b 1)`r`n`"$($realNpm.Source)`" %*"
+          [IO.File]::WriteAllText((Join-Path $stub "npm.cmd"), "@" + $npmStub)
+
+          $nssmStub = @'
+          @echo off
+          echo %*>>"%STUB_NSSM_LOG%"
+          if "%1"=="status" (
+            if exist "%STUB_SERVICE_MARKER%" (
+              echo SERVICE_RUNNING
+              exit /b 0
+            )
+            exit /b 1
+          )
+          if "%1"=="install" (
+            type nul > "%STUB_SERVICE_MARKER%"
+            exit /b 0
+          )
+          if "%1"=="remove" (
+            del "%STUB_SERVICE_MARKER%" 2>nul
+            exit /b 0
+          )
+          if "%1"=="start" (
+            if "%STUB_NSSM_FAIL_START%"=="1" exit /b 1
+            exit /b 0
+          )
+          exit /b 0
+'@
+          [IO.File]::WriteAllText((Join-Path $stub "nssm.cmd"), $nssmStub.TrimStart())
+          $stub | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Fresh install writes a restricted config and starts the service
+        shell: pwsh
+        env:
+          STUB_NSSM_LOG: ${{ runner.temp }}\nssm.log
+          STUB_SERVICE_MARKER: ${{ runner.temp }}\service.marker
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "scripts\install-agent-windows.ps1"
+          $install = Join-Path $env:RUNNER_TEMP "agent-install"
+          $upstream = Join-Path $env:RUNNER_TEMP "upstream"
+          $token = "sm_" + ("a" * 32)
+          & $script -Name ci-win -Token $token -ReportUrl "http://127.0.0.1:2536/servermonitor/report" -InstallDir $install -ServiceName ci-agent -RepoUrl $upstream
+          if ($LASTEXITCODE -ne 0) { throw "fresh install failed with $LASTEXITCODE" }
+          $cfg = Get-Content (Join-Path $install "servermonitor-agent.json") -Raw | ConvertFrom-Json
+          if ($cfg.token -ne $token) { throw "config token mismatch" }
+          if ($cfg.name -ne "ci-win") { throw "config name mismatch" }
+          if (Select-String -Path $env:STUB_NSSM_LOG -Pattern "SM_TOKEN=" -Quiet) { throw "token must not be written to the service environment" }
+          if (-not (Select-String -Path $env:STUB_NSSM_LOG -Pattern "install ci-agent" -Quiet)) { throw "nssm install was not called" }
+          if (-not (Select-String -Path $env:STUB_NSSM_LOG -Pattern "start ci-agent" -Quiet)) { throw "nssm start was not called" }
+
+      - name: Update keeps the token and installs the new code
+        shell: pwsh
+        env:
+          STUB_NSSM_LOG: ${{ runner.temp }}\nssm.log
+          STUB_SERVICE_MARKER: ${{ runner.temp }}\service.marker
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "scripts\install-agent-windows.ps1"
+          $install = Join-Path $env:RUNNER_TEMP "agent-install"
+          $upstream = Join-Path $env:RUNNER_TEMP "upstream"
+          [IO.File]::WriteAllText((Join-Path $upstream "agent\agent.mjs"), "console.log('fake-agent-v2')`n")
+          git -C $upstream add -A
+          git -C $upstream -c user.email=ci@example.com -c user.name=ci commit -q -m v2
+          $before = (Get-Content (Join-Path $install "servermonitor-agent.json") -Raw | ConvertFrom-Json).token
+          & $script -InstallDir $install -ServiceName ci-agent -RepoUrl $upstream
+          if ($LASTEXITCODE -ne 0) { throw "update failed with $LASTEXITCODE" }
+          $cfg = Get-Content (Join-Path $install "servermonitor-agent.json") -Raw | ConvertFrom-Json
+          if ($cfg.token -ne $before) { throw "update rotated the token" }
+          $agent = Get-Content (Join-Path $install "agent.mjs") -Raw
+          if ($agent -notmatch "fake-agent-v2") { throw "update did not install the new code" }
+
+      - name: Failed start rolls back to the previous code
+        shell: pwsh
+        env:
+          STUB_NSSM_LOG: ${{ runner.temp }}\nssm.log
+          STUB_SERVICE_MARKER: ${{ runner.temp }}\service.marker
+          STUB_NSSM_FAIL_START: "1"
+        run: |
+          $script = Join-Path $env:GITHUB_WORKSPACE "scripts\install-agent-windows.ps1"
+          $install = Join-Path $env:RUNNER_TEMP "agent-install"
+          $upstream = Join-Path $env:RUNNER_TEMP "upstream"
+          [IO.File]::WriteAllText((Join-Path $upstream "agent\agent.mjs"), "console.log('fake-agent-v3')`n")
+          git -C $upstream add -A
+          git -C $upstream -c user.email=ci@example.com -c user.name=ci commit -q -m v3
+          $before = Get-Content (Join-Path $install "agent.mjs") -Raw
+          $failed = $false
+          try { & $script -InstallDir $install -ServiceName ci-agent -RepoUrl $upstream } catch { $failed = $true; Write-Host "expected failure: $_" }
+          if (-not $failed) { throw "installer should have failed when the service cannot start" }
+          $after = Get-Content (Join-Path $install "agent.mjs") -Raw
+          if ($after -ne $before) { throw "rollback did not restore the previous agent code" }
+          if ($after -match "fake-agent-v3") { throw "rollback kept the new code" }
+          $cfg = Get-Content (Join-Path $install "servermonitor-agent.json") -Raw | ConvertFrom-Json
+          if (-not $cfg.token) { throw "rollback lost the config token" }
