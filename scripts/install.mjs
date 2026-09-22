@@ -416,7 +416,7 @@ async function printCommands(mode, rl) {
   }
 
   const name = await prompt(rl, "服务器名称", isWin ? "win-01" : isMac ? "mac-01" : "web-01")
-  let token = await prompt(rl, "上报 token（留空则生成一个新 token）", "")
+  let token = await prompt(rl, "上报 token（留空则在本机生成，之后到 Yunzai 私聊绑定）", "")
   let tokenGenerated = false
   if (!token) {
     token = makeToken()
@@ -431,7 +431,7 @@ async function printCommands(mode, rl) {
     windows: `irm https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-windows.ps1 -OutFile $env:TEMP\\install-agent-windows.ps1\npowershell -ExecutionPolicy Bypass -File $env:TEMP\\install-agent-windows.ps1 -Name "${name}" -Token "${token}" -ReportUrl "${reportUrl}"`,
   }
   console.log(`\n${map[mode]}`)
-  if (tokenGenerated && mode !== "plugin") {
+  if (tokenGenerated) {
     console.log(`\n绑定命令，复制到 Yunzai 主人私聊：`)
     console.log(`#服务器状态绑定 ${token}`)
   }

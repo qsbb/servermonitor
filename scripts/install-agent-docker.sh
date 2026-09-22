@@ -16,6 +16,21 @@ if [[ -z "$SM_REPORT_URL" && "$SM_TOKEN" =~ ^https?:// ]]; then
   SM_TOKEN=""
 fi
 
+validate_install_dir() {
+  local dir="$1"
+  [[ "$dir" == /* ]] || { echo "INSTALL_DIR must be an absolute path" >&2; exit 1; }
+  [[ "$dir" != "/" ]] || { echo "INSTALL_DIR must not be /" >&2; exit 1; }
+  [[ "$dir" == *servermonitor* ]] || { echo "INSTALL_DIR must contain 'servermonitor'" >&2; exit 1; }
+}
+
+dotenv_quote() {
+  local value="$1"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "配置值不能包含换行符" >&2; exit 1; }
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
 env_value() {
   local key="$1" value
   [[ -f "$INSTALL_DIR/.env" ]] || return 0
@@ -24,6 +39,8 @@ env_value() {
   value="${value#\"}"
   value="${value%\'}"
   value="${value#\'}"
+  value="${value//\\\"/\"}"
+  value="${value//\\\\/\\}"
   printf '%s' "$value"
 }
 
@@ -234,43 +251,72 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+STAGING="${INSTALL_DIR}.new-$$"
+BACKUP="${INSTALL_DIR}.bak-$$"
+
+validate_install_dir "$INSTALL_DIR"
+
+cleanup() {
+  rm -rf "${TMP_DIR:-}" "${STAGING:-}"
+}
+trap cleanup EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
-if [[ "$UPDATE_MODE" == "1" ]]; then
-  echo "[servermonitor-agent] updating docker deployment in $INSTALL_DIR"
-  cp -a "$INSTALL_DIR/.env" "$TMP_DIR/.env.backup"
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
-  cp -a "$TMP_DIR/.env.backup" "$INSTALL_DIR/.env"
-else
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  cp -a "$TMP_DIR/servermonitor" "$INSTALL_DIR"
-fi
+mkdir -p "$STAGING"
+cp -a "$TMP_DIR/servermonitor/." "$STAGING/"
 
 select_node_image
 
-cat >"$INSTALL_DIR/.env" <<EOF
-SM_NAME=${SM_NAME}
-SM_TOKEN=${SM_TOKEN}
-SM_REPORT_URL=${SM_REPORT_URL}
-SM_INTERVAL=${SM_INTERVAL}
-SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}
-SM_TIMEOUT=${SM_TIMEOUT}
-NODE_IMAGE=${NODE_IMAGE}
+cat >"$STAGING/.env" <<EOF
+SM_NAME=$(dotenv_quote "$SM_NAME")
+SM_TOKEN=$(dotenv_quote "$SM_TOKEN")
+SM_REPORT_URL=$(dotenv_quote "$SM_REPORT_URL")
+SM_INTERVAL=$(dotenv_quote "$SM_INTERVAL")
+SM_SLOW_INTERVAL=$(dotenv_quote "$SM_SLOW_INTERVAL")
+SM_TIMEOUT=$(dotenv_quote "$SM_TIMEOUT")
+NODE_IMAGE=$(dotenv_quote "$NODE_IMAGE")
 EOF
+chmod 600 "$STAGING/.env"
 
-cd "$INSTALL_DIR"
+cd "$STAGING"
 if [[ "$NODE_IMAGE_PRE_PULL" != "0" && "$NODE_IMAGE_PRE_PULL" != "false" ]]; then
   echo "[servermonitor-agent] pre-pulling selected node image: $NODE_IMAGE"
   docker pull "$NODE_IMAGE" || echo "[servermonitor-agent] pre-pull failed, continue with docker compose build"
 fi
-docker compose --env-file .env -f docker-compose.agent.yml up -d --build
+docker compose --env-file .env -f docker-compose.agent.yml build
+
+rollback() {
+  echo "[servermonitor-agent] update failed, restoring previous docker deployment" >&2
+  (cd "$INSTALL_DIR" && docker compose --env-file .env -f docker-compose.agent.yml down) >/dev/null 2>&1 || true
+  rm -rf "$INSTALL_DIR"
+  if [[ -d "$BACKUP" ]]; then mv "$BACKUP" "$INSTALL_DIR"; fi
+  if [[ -f "$INSTALL_DIR/.env" ]]; then
+    (cd "$INSTALL_DIR" && docker compose --env-file .env -f docker-compose.agent.yml up -d) >/dev/null 2>&1 || true
+  fi
+  exit 1
+}
+
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  echo "[servermonitor-agent] updating docker deployment in $INSTALL_DIR"
+  (cd "$INSTALL_DIR" && docker compose --env-file .env -f docker-compose.agent.yml down) || true
+fi
+
+mkdir -p "$(dirname "$INSTALL_DIR")"
+if [[ -d "$INSTALL_DIR" ]]; then mv "$INSTALL_DIR" "$BACKUP"; fi
+mv "$STAGING" "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+docker compose --env-file .env -f docker-compose.agent.yml up -d || rollback
+CID="$(docker compose --env-file .env -f docker-compose.agent.yml ps -q servermonitor-agent)"
+[[ -n "$CID" ]] || rollback
+sleep "${HEALTH_CHECK_DELAY:-2}"
+[[ "$(docker inspect -f '{{.State.Running}}' "$CID" 2>/dev/null)" == "true" ]] || rollback
+
+rm -rf "$BACKUP"
 
 echo "[servermonitor-agent] docker deployment $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] logs: cd $INSTALL_DIR && docker compose -f docker-compose.agent.yml logs -f"
+echo "[servermonitor-agent] env: $INSTALL_DIR/.env (mode 600)"
 echo "[servermonitor-agent] token: $SM_TOKEN"
 echo "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $SM_TOKEN"

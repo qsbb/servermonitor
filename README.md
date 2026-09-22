@@ -185,7 +185,7 @@ Windows 可运行：
 
 GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试：
 
-agent 安装脚本会自动检测本机已有的 systemd / Docker / NSSM / launchd 安装；检测到时进入更新模式，保留原 `SM_NAME`、`SM_TOKEN`、`SM_REPORT_URL`，只更新代码并重启服务。直接重跑同一条一键命令即可更新。
+agent 安装脚本会自动检测本机已有的 systemd / Docker / NSSM / launchd 安装；检测到时进入更新模式。Linux / macOS 更新采用“先装后切”：先在临时目录安装依赖并自检，通过后才停服务切换；任何一步失败都会恢复旧版本并重启。配置与 token 保存在 agent 目录的 `servermonitor-agent.json`（权限 0600），systemd unit / launchd plist 不再内嵌密钥。直接重跑同一条一键命令即可更新。
 
 ```bash
 REPO_MIRRORS="https://github.com/qsbb/servermonitor.git,https://ghfast.top/https://github.com/qsbb/servermonitor.git" \

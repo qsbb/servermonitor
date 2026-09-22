@@ -133,6 +133,8 @@ docker compose -f docker-compose.agent.yml logs -f
 
 ## systemd 服务示例
 
+一键安装脚本会把名称、token、上报地址写入 agent 目录的 `servermonitor-agent.json`（权限 0600），unit 只保留启动命令，避免 token 出现在 `systemctl show` 输出里：
+
 ```ini
 [Unit]
 Description=servermonitor agent
@@ -141,9 +143,6 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=/opt/servermonitor/agent
-Environment=SM_NAME=web-01
-Environment=SM_TOKEN=sm_xxx
-Environment=SM_REPORT_URL=http://yunzai.example.com/servermonitor/report
 ExecStart=/usr/bin/node /opt/servermonitor/agent/agent.mjs
 Restart=always
 RestartSec=5
@@ -151,6 +150,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ```
+
+手动部署时也可以继续使用 `Environment=` 或环境变量；命令行参数优先级最高，其次是环境变量，最后是 `servermonitor-agent.json`。
 
 ## Windows NSSM 示例
 

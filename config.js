@@ -57,8 +57,26 @@ function yamlString(value) {
   return JSON.stringify(String(value ?? ""))
 }
 
+function stripInlineComment(value) {
+  const text = String(value ?? "")
+  let quote = ""
+  let escaped = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (escaped) { escaped = false; continue }
+    if (quote) {
+      if (ch === "\\") { escaped = true; continue }
+      if (ch === quote) quote = ""
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === "#" && (i === 0 || /\s/.test(text[i - 1]))) return text.slice(0, i)
+  }
+  return text
+}
+
 function parseScalar(value) {
-  const s = String(value ?? "").trim()
+  const s = stripInlineComment(value).trim()
   if (!s) return ""
   if (s.startsWith("[") && s.endsWith("]")) {
     try {
@@ -286,19 +304,27 @@ export function normalizeConfig(input = {}) {
   return base
 }
 
+let permissionsChecked = false
+
 async function atomicWriteFile(file, content) {
-  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`
-  await fs.writeFile(tmp, content, "utf8")
+  await fs.writeFile(tmp, content, { encoding: "utf8", mode: 0o600 })
   await fs.rename(tmp, file)
+  await fs.chmod(file, 0o600).catch(() => {})
 }
 
 async function ensureStorage() {
-  await fs.mkdir(DATA_DIR, { recursive: true })
+  await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 })
   try {
     await fs.access(CONFIG_FILE)
   } catch {
-    await atomicWriteFile(CONFIG_FILE, stringifyConfig({ ...DEFAULT_CONFIG, shared_token: makeToken() }))
+    await atomicWriteFile(CONFIG_FILE, stringifyConfig({ ...DEFAULT_CONFIG }))
+  }
+  if (!permissionsChecked) {
+    permissionsChecked = true
+    await fs.chmod(CONFIG_FILE, 0o600).catch(() => {})
+    await fs.chmod(DATA_DIR, 0o700).catch(() => {})
   }
 }
 

@@ -93,7 +93,26 @@ clone_repo() {
   return 1
 }
 INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor/agent}"
-PLIST="${PLIST:-/Library/LaunchDaemons/com.servermonitor.agent.plist}"
+LAUNCHD_DIR="${LAUNCHD_DIR:-/Library/LaunchDaemons}"
+PLIST="${PLIST:-${LAUNCHD_DIR}/com.servermonitor.agent.plist}"
+LABEL="com.servermonitor.agent"
+LOG_DIR="${LOG_DIR:-/var/log/servermonitor}"
+SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
+HEALTH_CHECK_DELAY="${HEALTH_CHECK_DELAY:-2}"
+
+validate_install_dir() {
+  local dir="$1"
+  [[ "$dir" == /* ]] || { echo "INSTALL_DIR must be an absolute path" >&2; exit 1; }
+  [[ "$dir" != "/" ]] || { echo "INSTALL_DIR must not be /" >&2; exit 1; }
+  [[ "$dir" == *servermonitor* ]] || { echo "INSTALL_DIR must contain 'servermonitor'" >&2; exit 1; }
+}
+
+config_value() {
+  local key="$1"
+  [[ -f "$INSTALL_DIR/servermonitor-agent.json" ]] || return 0
+  node -e 'const fs=require("fs");try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const v=c[process.argv[2]];if(v!==undefined&&v!==null)process.stdout.write(String(v))}catch{}' \
+    "$INSTALL_DIR/servermonitor-agent.json" "$key" 2>/dev/null || true
+}
 
 plist_env_value() {
   local key="$1"
@@ -115,6 +134,13 @@ UPDATE_MODE=0
 if [[ -f "$PLIST" && -f "$INSTALL_DIR/agent.mjs" ]]; then
   UPDATE_MODE=1
   echo "[servermonitor-agent] existing installation detected: $PLIST"
+  [[ -z "$SM_NAME" ]] && SM_NAME="$(config_value name)"
+  [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(config_value token)"
+  [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(config_value reportUrl)"
+  SM_INTERVAL="${SM_INTERVAL:-$(config_value interval)}"
+  SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-$(config_value slowInterval)}"
+  SM_TIMEOUT="${SM_TIMEOUT:-$(config_value timeout)}"
+  # migrate from plist environment values written by older versions
   [[ -z "$SM_NAME" ]] && SM_NAME="$(plist_env_value SM_NAME)"
   [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(plist_env_value SM_TOKEN)"
   [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(plist_env_value SM_REPORT_URL)"
@@ -149,7 +175,9 @@ EOF
   exit 1
 fi
 
-if [[ $EUID -ne 0 ]]; then
+validate_install_dir "$INSTALL_DIR"
+
+if [[ "$SKIP_ROOT_CHECK" != "1" && $EUID -ne 0 ]]; then
   echo "please run as root for launchd daemon installation" >&2
   exit 1
 fi
@@ -171,29 +199,36 @@ if [[ "$NODE_MAJOR" -lt 18 ]]; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+STAGING="${INSTALL_DIR}.new-$$"
+BACKUP="${INSTALL_DIR}.bak-$$"
+PLIST_BACKUP="${PLIST}.bak-$$"
+STAGING_PLIST="${TMP_DIR}/com.servermonitor.agent.plist"
+
+cleanup() {
+  rm -rf "${TMP_DIR:-}" "${STAGING:-}" "${STAGING_PLIST:-}"
+}
+trap cleanup EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
-if [[ "$UPDATE_MODE" == "1" ]]; then
-  launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
-  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
-fi
-mkdir -p "$(dirname "$INSTALL_DIR")"
-rm -rf "$INSTALL_DIR"
-cp -a "$TMP_DIR/servermonitor/agent" "$INSTALL_DIR"
-cd "$INSTALL_DIR"
+mkdir -p "$STAGING"
+cp -a "$TMP_DIR/servermonitor/agent/." "$STAGING/"
+cd "$STAGING"
 npm install --omit=dev
+node --check agent.mjs
+node -e 'import("systeminformation").then(()=>{}, e => { console.error(e.message); process.exit(1) })'
+node -e 'const fs=require("fs");const [file,name,token,url,interval,slow,timeout]=process.argv.slice(1);fs.writeFileSync(file,JSON.stringify({name,token,reportUrl:url,interval:Number(interval),slowInterval:Number(slow),timeout:Number(timeout)},null,2),{mode:0o600})' \
+  "$STAGING/servermonitor-agent.json" "$SM_NAME" "$SM_TOKEN" "$SM_REPORT_URL" "$SM_INTERVAL" "$SM_SLOW_INTERVAL" "$SM_TIMEOUT"
+chmod 600 "$STAGING/servermonitor-agent.json"
 
-mkdir -p /var/log/servermonitor
-
-cat >"$PLIST" <<EOF
+mkdir -p "$(dirname "$PLIST")"
+cat >"$STAGING_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.servermonitor.agent</string>
+  <string>${LABEL}</string>
   <key>WorkingDirectory</key>
   <string>${INSTALL_DIR}</string>
   <key>ProgramArguments</key>
@@ -201,42 +236,56 @@ cat >"$PLIST" <<EOF
     <string>${NODE_BIN}</string>
     <string>${INSTALL_DIR}/agent.mjs</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>SM_NAME</key>
-    <string>${SM_NAME}</string>
-    <key>SM_TOKEN</key>
-    <string>${SM_TOKEN}</string>
-    <key>SM_REPORT_URL</key>
-    <string>${SM_REPORT_URL}</string>
-    <key>SM_INTERVAL</key>
-    <string>${SM_INTERVAL}</string>
-    <key>SM_SLOW_INTERVAL</key>
-    <string>${SM_SLOW_INTERVAL}</string>
-    <key>SM_TIMEOUT</key>
-    <string>${SM_TIMEOUT}</string>
-  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/var/log/servermonitor/agent.log</string>
+  <string>${LOG_DIR}/agent.log</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/servermonitor/agent.err.log</string>
+  <string>${LOG_DIR}/agent.err.log</string>
 </dict>
 </plist>
 EOF
 
-chown root:wheel "$PLIST"
+rollback() {
+  echo "[servermonitor-agent] update failed, restoring previous installation" >&2
+  rm -rf "$INSTALL_DIR"
+  if [[ -d "$BACKUP" ]]; then mv "$BACKUP" "$INSTALL_DIR"; fi
+  if [[ -f "$PLIST_BACKUP" ]]; then mv "$PLIST_BACKUP" "$PLIST"; fi
+  launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+  launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || true
+  launchctl enable "system/${LABEL}" >/dev/null 2>&1 || true
+  launchctl kickstart -k "system/${LABEL}" >/dev/null 2>&1 || true
+  exit 1
+}
+
+mkdir -p "$LOG_DIR"
+
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
+  launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+fi
+
+mkdir -p "$(dirname "$INSTALL_DIR")"
+if [[ -d "$INSTALL_DIR" ]]; then mv "$INSTALL_DIR" "$BACKUP"; fi
+mv "$STAGING" "$INSTALL_DIR"
+if [[ -f "$PLIST" ]]; then cp -a "$PLIST" "$PLIST_BACKUP"; fi
+cp "$STAGING_PLIST" "$PLIST"
+chown root:wheel "$PLIST" 2>/dev/null || true
 chmod 644 "$PLIST"
-launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
-launchctl bootstrap system "$PLIST"
-launchctl enable system/com.servermonitor.agent
-launchctl kickstart -k system/com.servermonitor.agent
+
+launchctl bootstrap system "$PLIST" || rollback
+launchctl enable "system/${LABEL}" || rollback
+launchctl kickstart -k "system/${LABEL}" || rollback
+sleep "$HEALTH_CHECK_DELAY"
+launchctl print "system/${LABEL}" >/dev/null 2>&1 || rollback
+
+rm -rf "$BACKUP" "$PLIST_BACKUP"
 
 echo "[servermonitor-agent] $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] plist: $PLIST"
-echo "[servermonitor-agent] logs: tail -f /var/log/servermonitor/agent.log /var/log/servermonitor/agent.err.log"
+echo "[servermonitor-agent] logs: tail -f $LOG_DIR/agent.log $LOG_DIR/agent.err.log"
+echo "[servermonitor-agent] config: $INSTALL_DIR/servermonitor-agent.json (mode 600)"
 echo "[servermonitor-agent] token: $SM_TOKEN"
 echo "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $SM_TOKEN"

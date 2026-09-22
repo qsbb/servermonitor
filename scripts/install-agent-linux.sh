@@ -94,7 +94,24 @@ clone_repo() {
 }
 INSTALL_DIR="${INSTALL_DIR:-/opt/servermonitor/agent}"
 SERVICE_NAME="${SERVICE_NAME:-servermonitor-agent}"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+SERVICE_DIR="${SERVICE_DIR:-/etc/systemd/system}"
+SERVICE_FILE="${SERVICE_DIR}/${SERVICE_NAME}.service"
+SKIP_ROOT_CHECK="${SKIP_ROOT_CHECK:-0}"
+HEALTH_CHECK_DELAY="${HEALTH_CHECK_DELAY:-2}"
+
+validate_install_dir() {
+  local dir="$1"
+  [[ "$dir" == /* ]] || { echo "INSTALL_DIR must be an absolute path" >&2; exit 1; }
+  [[ "$dir" != "/" ]] || { echo "INSTALL_DIR must not be /" >&2; exit 1; }
+  [[ "$dir" == *servermonitor* ]] || { echo "INSTALL_DIR must contain 'servermonitor'" >&2; exit 1; }
+}
+
+config_value() {
+  local key="$1"
+  [[ -f "$INSTALL_DIR/servermonitor-agent.json" ]] || return 0
+  node -e 'const fs=require("fs");try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const v=c[process.argv[2]];if(v!==undefined&&v!==null)process.stdout.write(String(v))}catch{}' \
+    "$INSTALL_DIR/servermonitor-agent.json" "$key" 2>/dev/null || true
+}
 
 svc_env_value() {
   local key="$1"
@@ -114,6 +131,13 @@ UPDATE_MODE=0
 if [[ -f "$SERVICE_FILE" && -f "$INSTALL_DIR/agent.mjs" ]]; then
   UPDATE_MODE=1
   echo "[servermonitor-agent] existing installation detected: $SERVICE_FILE"
+  [[ -z "$SM_NAME" ]] && SM_NAME="$(config_value name)"
+  [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(config_value token)"
+  [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(config_value reportUrl)"
+  SM_INTERVAL="${SM_INTERVAL:-$(config_value interval)}"
+  SM_SLOW_INTERVAL="${SM_SLOW_INTERVAL:-$(config_value slowInterval)}"
+  SM_TIMEOUT="${SM_TIMEOUT:-$(config_value timeout)}"
+  # migrate from unit environment lines written by older versions
   [[ -z "$SM_NAME" ]] && SM_NAME="$(svc_env_value SM_NAME)"
   [[ -z "$SM_TOKEN" ]] && SM_TOKEN="$(svc_env_value SM_TOKEN)"
   [[ -z "$SM_REPORT_URL" ]] && SM_REPORT_URL="$(svc_env_value SM_REPORT_URL)"
@@ -153,7 +177,9 @@ EOF
   exit 1
 fi
 
-if [[ $EUID -ne 0 ]]; then
+validate_install_dir "$INSTALL_DIR"
+
+if [[ "$SKIP_ROOT_CHECK" != "1" && $EUID -ne 0 ]]; then
   echo "please run as root for systemd installation" >&2
   exit 1
 fi
@@ -175,22 +201,29 @@ if [[ "$NODE_MAJOR" -lt 18 ]]; then
 fi
 
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+STAGING="${INSTALL_DIR}.new-$$"
+BACKUP="${INSTALL_DIR}.bak-$$"
+UNIT_BACKUP="${SERVICE_FILE}.bak-$$"
+STAGING_UNIT="${TMP_DIR}/${SERVICE_NAME}.service"
+
+cleanup() {
+  rm -rf "${TMP_DIR:-}" "${STAGING:-}" "${STAGING_UNIT:-}"
+}
+trap cleanup EXIT
 
 clone_repo "$TMP_DIR/servermonitor"
 
-if [[ "$UPDATE_MODE" == "1" ]]; then
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
-fi
-mkdir -p "$(dirname "$INSTALL_DIR")"
-rm -rf "$INSTALL_DIR"
-cp -a "$TMP_DIR/servermonitor/agent" "$INSTALL_DIR"
-
-cd "$INSTALL_DIR"
+mkdir -p "$STAGING"
+cp -a "$TMP_DIR/servermonitor/agent/." "$STAGING/"
+cd "$STAGING"
 npm install --omit=dev
+node --check agent.mjs
+node -e 'import("systeminformation").then(()=>{}, e => { console.error(e.message); process.exit(1) })'
+node -e 'const fs=require("fs");const [file,name,token,url,interval,slow,timeout]=process.argv.slice(1);fs.writeFileSync(file,JSON.stringify({name,token,reportUrl:url,interval:Number(interval),slowInterval:Number(slow),timeout:Number(timeout)},null,2),{mode:0o600})' \
+  "$STAGING/servermonitor-agent.json" "$SM_NAME" "$SM_TOKEN" "$SM_REPORT_URL" "$SM_INTERVAL" "$SM_SLOW_INTERVAL" "$SM_TIMEOUT"
+chmod 600 "$STAGING/servermonitor-agent.json"
 
-cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+cat >"$STAGING_UNIT" <<EOF
 [Unit]
 Description=servermonitor agent
 After=network-online.target
@@ -199,12 +232,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-Environment="SM_NAME=${SM_NAME}"
-Environment="SM_TOKEN=${SM_TOKEN}"
-Environment="SM_REPORT_URL=${SM_REPORT_URL}"
-Environment="SM_INTERVAL=${SM_INTERVAL}"
-Environment="SM_SLOW_INTERVAL=${SM_SLOW_INTERVAL}"
-Environment="SM_TIMEOUT=${SM_TIMEOUT}"
 ExecStart=${NODE_BIN} ${INSTALL_DIR}/agent.mjs
 Restart=always
 RestartSec=5
@@ -213,12 +240,39 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+rollback() {
+  echo "[servermonitor-agent] update failed, restoring previous installation" >&2
+  rm -rf "$INSTALL_DIR"
+  if [[ -d "$BACKUP" ]]; then mv "$BACKUP" "$INSTALL_DIR"; fi
+  if [[ -f "$UNIT_BACKUP" ]]; then mv "$UNIT_BACKUP" "$SERVICE_FILE"; fi
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+  exit 1
+}
+
+if [[ "$UPDATE_MODE" == "1" ]]; then
+  echo "[servermonitor-agent] updating agent code in $INSTALL_DIR"
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+fi
+
+mkdir -p "$(dirname "$INSTALL_DIR")"
+if [[ -d "$INSTALL_DIR" ]]; then mv "$INSTALL_DIR" "$BACKUP"; fi
+mv "$STAGING" "$INSTALL_DIR"
+if [[ -f "$SERVICE_FILE" ]]; then cp -a "$SERVICE_FILE" "$UNIT_BACKUP"; fi
+cp "$STAGING_UNIT" "$SERVICE_FILE"
+chmod 644 "$SERVICE_FILE"
+
+systemctl daemon-reload || rollback
+systemctl enable --now "$SERVICE_NAME" || rollback
+sleep "$HEALTH_CHECK_DELAY"
+systemctl is-active --quiet "$SERVICE_NAME" || rollback
+
+rm -rf "$BACKUP" "$UNIT_BACKUP"
 
 echo "[servermonitor-agent] $([[ "$UPDATE_MODE" == "1" ]] && echo updated || echo installed) to $INSTALL_DIR"
 echo "[servermonitor-agent] service: $SERVICE_NAME"
 echo "[servermonitor-agent] status: systemctl status $SERVICE_NAME"
 echo "[servermonitor-agent] logs: journalctl -u $SERVICE_NAME -f"
+echo "[servermonitor-agent] config: $INSTALL_DIR/servermonitor-agent.json (mode 600)"
 echo "[servermonitor-agent] token: $SM_TOKEN"
 echo "[servermonitor-agent] wait one upload log, then bind in Yunzai private chat: #服务器状态绑定 $SM_TOKEN"

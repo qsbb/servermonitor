@@ -150,10 +150,11 @@ function clampPower(value) {
 }
 
 async function atomicWriteJson(file, payload) {
-  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2), "utf8")
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 })
   await fs.rename(tmp, file)
+  await fs.chmod(file, 0o600).catch(() => {})
 }
 
 export function isEmptySnapshot(snap) {
@@ -1186,7 +1187,7 @@ export async function persist() {
   try {
     await bootstrap()
     await flushPending()
-    await fs.mkdir(DATA_DIR, { recursive: true })
+    await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 })
     const config = await refreshConfig()
     const payload = {
       v: 1,
