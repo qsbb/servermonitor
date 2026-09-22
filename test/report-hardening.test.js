@@ -137,6 +137,36 @@ console.log("__RESULT__" + JSON.stringify({ statuses }))
   assert.equal(result.statuses[10], 429)
 })
 
+test("registered independent tokens keep working after hardening", async () => {
+  const token = "sm_" + "f".repeat(32)
+  const { code, result } = await runInTempRepo({
+    config: basicConfig(`servers:
+  - name: "legacy-node"
+    token: "${token}"
+    note: ""
+    createdAt: 1`),
+    script: `
+import { handleReport, state } from "./model.js"
+${PREAMBLE}
+const out = res()
+await handleReport(req({ token: "${token}" }), out)
+console.log("__RESULT__" + JSON.stringify({
+  status: out.statusCode,
+  payload: out.payload,
+  recordState: state.records.get("legacy-node")?.state || null,
+  lastSeen: state.records.get("legacy-node")?.lastSeen || 0,
+}))
+`,
+  })
+  assert.equal(code, 0)
+  assert.equal(result.status, 200)
+  assert.equal(result.payload.ok, true)
+  assert.equal(result.payload.name, "legacy-node")
+  assert.equal(result.payload.auto, false)
+  assert.equal(result.recordState, "online")
+  assert.ok(result.lastSeen > 0)
+})
+
 test("report ingestion can be disabled by config", async () => {
   const { code, result } = await runInTempRepo({
     config: basicConfig("report_enabled: false"),
