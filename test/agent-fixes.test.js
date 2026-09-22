@@ -98,6 +98,31 @@ test("filterDisks falls back to the macOS data volume when the root volume is mi
   assert.equal(disks[0].used, 120)
 })
 
+test("filterDisks collapses bind mounts that share a device and usage", { skip }, () => {
+  const gib = 1024 ** 3
+  const disks = agent.filterDisks([
+    { mount: "/mnt/nas/a", fs: "/dev/sdb1", type: "ext4", used: 100 * gib, size: 400 * gib },
+    { mount: "/mnt/nas/b", fs: "/dev/sdb1", type: "ext4", used: 100 * gib, size: 400 * gib },
+    { mount: "/mnt/nas/c", fs: "/dev/sdb1", type: "ext4", used: 100 * gib, size: 400 * gib },
+    { mount: "/data", fs: "/dev/sdc1", type: "ext4", used: 50 * gib, size: 200 * gib },
+    { mount: "/mirror", fs: "/dev/sdd1", type: "ext4", used: 100 * gib, size: 400 * gib },
+  ])
+  assert.deepEqual(disks.map(item => item.mount).sort(), ["/data", "/mirror", "/mnt/nas/a"])
+})
+
+test("filterDisks collapses identical shares from the same file server", { skip }, () => {
+  const gib = 1024 ** 3
+  const disks = agent.filterDisks([
+    { mount: "/mnt/nas/a", fs: "//192.168.5.88/Bot", type: "cifs", used: 100 * gib, size: 400 * gib },
+    { mount: "/mnt/nas/b", fs: "//192.168.5.88/photo", type: "cifs", used: 100 * gib, size: 400 * gib },
+    { mount: "/mnt/nas/c", fs: "//192.168.5.88/AI", type: "cifs", used: 20 * gib, size: 400 * gib },
+    { mount: "/mnt/other", fs: "//192.168.5.99/backup", type: "cifs", used: 100 * gib, size: 400 * gib },
+    { mount: "/mnt/nfs1", fs: "10.0.0.5:/export1", type: "nfs", used: 50 * gib, size: 200 * gib },
+    { mount: "/mnt/nfs2", fs: "10.0.0.5:/export2", type: "nfs", used: 50 * gib, size: 200 * gib },
+  ])
+  assert.deepEqual(disks.map(item => item.mount).sort(), ["/mnt/nas/a", "/mnt/nas/c", "/mnt/nfs1", "/mnt/other"])
+})
+
 test("isLoopbackReportUrl only flags addresses that cannot leave the machine", { skip }, () => {
   assert.equal(agent.isLoopbackReportUrl("http://127.0.0.1:2536/servermonitor/report"), true)
   assert.equal(agent.isLoopbackReportUrl("http://localhost:2536/servermonitor/report"), true)

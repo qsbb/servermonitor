@@ -118,11 +118,23 @@ export function isLoopbackReportUrl(value) {
   }
 }
 
+function networkMountKey(item) {
+  const type = String(item?.type || "").toLowerCase()
+  if (!/^(cifs|smb3?|nfs4?|afpfs|webdav)$/.test(type)) return null
+  const device = String(item?.fs || "")
+  const host = device.startsWith("//") ? `//${device.slice(2).split("/")[0]}` : device.split(":")[0]
+  if (!host) return null
+  // 同一台服务器上的多个共享如果用量完全一致，说明是同一个后端卷
+  return `${host}|${item.used ?? ""}|${item.size ?? item.total ?? ""}`
+}
+
 export function filterDisks(list = []) {
   const badType = /^(tmpfs|devtmpfs|overlay|squashfs|ramfs|efivarfs|autofs|vfat|iso9660)$/i
   // 注意：这里必须大小写敏感，否则 /sys 会误伤 macOS 的 /System/Volumes/*
   const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers|\/etc\/(hosts|hostname|resolv\.conf)$)/
   const seen = new Set()
+  const seenDevice = new Set()
+  const seenNetwork = new Set()
   const usable = list
     .filter(item => item && !badType.test(String(item.type || "")) && !badMount.test(String(item.mount || "")))
   // macOS 上 /System/Volumes/*（Data/VM/Preboot…）和 / 属于同一个 APFS 卷组，重复上报会重复计算
@@ -136,6 +148,18 @@ export function filterDisks(list = []) {
     .filter(item => {
       const key = String(item.mount || item.fs || "")
       if (!key || seen.has(key)) return false
+      // 同一设备 + 同样用量 = 同一文件系统的 bind mount，去重避免重复展示
+      const device = String(item.fs || "")
+      if (device) {
+        const signature = `${device}|${item.used ?? ""}|${item.size ?? item.total ?? ""}`
+        if (seenDevice.has(signature)) return false
+        seenDevice.add(signature)
+      }
+      const netKey = networkMountKey(item)
+      if (netKey) {
+        if (seenNetwork.has(netKey)) return false
+        seenNetwork.add(netKey)
+      }
       seen.add(key)
       return true
     })
@@ -166,7 +190,7 @@ export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
     if (!Number.isFinite(totalKb) || !Number.isFinite(usedKb) || totalKb <= 0) continue
     const rawMount = fields.slice(6).join(" ")
     const mount = rawMount === "/host" ? "/" : rawMount.replace(/^\/host(?=\/)/, "")
-    rows.push({ mount, type: fields[1], used: usedKb * 1024, size: totalKb * 1024 })
+    rows.push({ mount, type: fields[1], fs: fields[0], used: usedKb * 1024, size: totalKb * 1024 })
   }
   return filterDisks(rows)
 }
