@@ -77,6 +77,7 @@ jobs:
           if (Select-String -Path $env:STUB_NSSM_LOG -Pattern "SM_TOKEN=" -Quiet) { throw "token must not be written to the service environment" }
           if (-not (Select-String -Path $env:STUB_NSSM_LOG -Pattern "install ci-agent" -Quiet)) { throw "nssm install was not called" }
           if (-not (Select-String -Path $env:STUB_NSSM_LOG -Pattern "start ci-agent" -Quiet)) { throw "nssm start was not called" }
+          exit 0
 
       - name: Update keeps the token and installs the new code
         shell: pwsh
@@ -97,6 +98,7 @@ jobs:
           if ($cfg.token -ne $before) { throw "update rotated the token" }
           $agent = Get-Content (Join-Path $install "agent.mjs") -Raw
           if ($agent -notmatch "fake-agent-v2") { throw "update did not install the new code" }
+          exit 0
 
       - name: Staging failure keeps the running installation untouched
         shell: pwsh
@@ -121,6 +123,7 @@ jobs:
           foreach ($line in $newLines) {
             if ($line -notmatch "^status ci-agent") { throw "staging failure must not touch the service (saw: $line)" }
           }
+          exit 0
 
       - name: Failed start rolls back to the previous code
         shell: pwsh
@@ -144,3 +147,4 @@ jobs:
           if ($after -match "fake-agent-v4") { throw "rollback kept the new code" }
           $cfg = Get-Content (Join-Path $install "servermonitor-agent.json") -Raw | ConvertFrom-Json
           if (-not $cfg.token) { throw "rollback lost the config token" }
+          exit 0
