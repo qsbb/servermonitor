@@ -109,23 +109,41 @@ export function pickActiveInterface(list = []) {
   return sorted[0] || null
 }
 
+export function isLoopbackReportUrl(value) {
+  try {
+    const host = new URL(String(value)).hostname.toLowerCase()
+    return host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host)
+  } catch {
+    return false
+  }
+}
+
 export function filterDisks(list = []) {
   const badType = /^(tmpfs|devtmpfs|overlay|squashfs|ramfs|efivarfs|autofs|vfat|iso9660)$/i
-  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers|\/etc\/(hosts|hostname|resolv\.conf)$)/i
+  // 注意：这里必须大小写敏感，否则 /sys 会误伤 macOS 的 /System/Volumes/*
+  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers|\/etc\/(hosts|hostname|resolv\.conf)$)/
   const seen = new Set()
-  return list
+  const usable = list
     .filter(item => item && !badType.test(String(item.type || "")) && !badMount.test(String(item.mount || "")))
+  // macOS 上 /System/Volumes/*（Data/VM/Preboot…）和 / 属于同一个 APFS 卷组，重复上报会重复计算
+  const systemVolumes = usable.filter(item => /^\/System\/Volumes\//i.test(String(item.mount || "").trim()))
+  const primary = usable.filter(item => !/^\/System\/Volumes\//i.test(String(item.mount || "").trim()))
+  const hasRoot = primary.some(item => String(item.mount || "").trim() === "/")
+  const source = !hasRoot && systemVolumes.length
+    ? [...primary, ...systemVolumes.filter(item => /^\/System\/Volumes\/Data$/i.test(String(item.mount || "").trim()))]
+    : primary
+  return source
     .filter(item => {
       const key = String(item.mount || item.fs || "")
       if (!key || seen.has(key)) return false
       seen.add(key)
       return true
     })
-    .map(item => ({
-      mount: String(item.mount || item.fs || "").trim() === "/host" ? "/" : String(item.mount || item.fs || "").trim() || "?",
-      used: gb(item.used),
-      total: gb(item.size ?? item.total),
-    }))
+    .map(item => {
+      const raw = String(item.mount || item.fs || "").trim()
+      const mount = raw === "/host" || raw === "/System/Volumes/Data" ? "/" : raw || "?"
+      return { mount, used: gb(item.used), total: gb(item.size ?? item.total) }
+    })
     .filter(item => item.total !== null)
     .sort((a, b) => {
       if (a.mount === "/" || /^C:([\\/])?$/i.test(a.mount)) return -1
@@ -871,6 +889,10 @@ async function main() {
   if (!name || (!token && !dryRun)) {
     console.error(help())
     process.exit(1)
+  }
+
+  if (isLoopbackReportUrl(reportUrl)) {
+    console.error(`[servermonitor-agent] warning: report URL ${reportUrl} 是回环地址，只有 Yunzai 与 agent 在同一台机器时才能上报成功`)
   }
 
   const collector = new Collector({ slowInterval: slowInterval * 1000 })

@@ -76,6 +76,36 @@ test("filterDisks excludes container secret mounts and virtual filesystems", { s
   assert.equal(root.total, 100)
 })
 
+test("filterDisks drops macOS APFS system volumes that duplicate the root disk", { skip }, () => {
+  const gib = 1024 ** 3
+  const disks = agent.filterDisks([
+    { mount: "/", type: "apfs", used: 120 * gib, size: 460 * gib },
+    { mount: "/System/Volumes/Data", type: "apfs", used: 120 * gib, size: 460 * gib },
+    { mount: "/System/Volumes/VM", type: "apfs", used: 4 * gib, size: 460 * gib },
+    { mount: "/System/Volumes/Preboot", type: "apfs", used: 1 * gib, size: 460 * gib },
+    { mount: "/Volumes/Backup", type: "hfs", used: 10 * gib, size: 500 * gib },
+  ])
+  assert.deepEqual(disks.map(item => item.mount), ["/", "/Volumes/Backup"])
+})
+
+test("filterDisks falls back to the macOS data volume when the root volume is missing", { skip }, () => {
+  const gib = 1024 ** 3
+  const disks = agent.filterDisks([
+    { mount: "/System/Volumes/Data", type: "apfs", used: 120 * gib, size: 460 * gib },
+    { mount: "/System/Volumes/VM", type: "apfs", used: 4 * gib, size: 460 * gib },
+  ])
+  assert.deepEqual(disks.map(item => item.mount), ["/"])
+  assert.equal(disks[0].used, 120)
+})
+
+test("isLoopbackReportUrl only flags addresses that cannot leave the machine", { skip }, () => {
+  assert.equal(agent.isLoopbackReportUrl("http://127.0.0.1:2536/servermonitor/report"), true)
+  assert.equal(agent.isLoopbackReportUrl("http://localhost:2536/servermonitor/report"), true)
+  assert.equal(agent.isLoopbackReportUrl("http://[::1]:2536/servermonitor/report"), true)
+  assert.equal(agent.isLoopbackReportUrl("http://lingxiz.cn:2536/servermonitor/report"), false)
+  assert.equal(agent.isLoopbackReportUrl("not a url"), false)
+})
+
 test("pickActiveInterface prefers the busiest non-virtual interface", { skip }, () => {
   assert.equal(agent.pickActiveInterface([]), null)
   assert.equal(
