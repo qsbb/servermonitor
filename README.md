@@ -47,6 +47,44 @@ ls plugins/servermonitor/index.js
 5. 在目标服务器上部署 `agent/` 目录并安装依赖
 6. 启动 agent 后，Yunzai 就会接收并展示多机状态
 
+## 升级（Linux）
+
+### 1. 先升级 Yunzai 插件
+
+```bash
+cd /path/to/Yunzai
+git -C plugins/servermonitor pull --ff-only
+```
+
+或主人私聊发送 `#服务器状态插件更新`，然后重启 Yunzai 并发送 `#服务器状态检查`。
+
+> 0.1.19 起共享 token 已停用：agent 如果还在用旧共享 token，会收到 `401 shared token disabled`。在主人私聊执行 `#服务器状态命令 <名称>` 取回独立 token，再更新 agent 配置。
+
+### 2. 更新 systemd agent
+
+重复执行同一条一键命令即可，会自动沿用原名称、token 和上报地址：
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh)
+```
+
+更新采用“先装后切”：先在临时目录安装依赖并自检，通过后才停服务切换；任何一步失败都会恢复旧版本并重启旧服务。
+
+### 3. 更新 Docker agent
+
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh)
+```
+
+### 4. 验证
+
+```bash
+systemctl status servermonitor-agent --no-pager
+journalctl -u servermonitor-agent -n 30 --no-pager     # 应出现 uploaded
+grep -m1 AGENT_VERSION /opt/servermonitor/agent/agent.mjs   # 应为 0.1.19
+sudo ls -l /opt/servermonitor/agent/servermonitor-agent.json   # 权限应为 600
+```
+
 ## 管理命令
 
 | 命令 | 作用 |
