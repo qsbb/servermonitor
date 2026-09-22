@@ -96,8 +96,16 @@ verify_clone_matches_official() {
     official="$(git ls-remote "$DEFAULT_REPO_URL" "refs/heads/$BRANCH" 2>/dev/null | awk 'NR==1{print $1}')"
   fi
   if [[ -z "$official" ]]; then
-    echo "[servermonitor-agent] warning: cannot verify mirror freshness against official repo; continuing" >&2
-    return 0
+    if [[ "${ALLOW_UNVERIFIED_MIRROR:-0}" == "1" || "${ALLOW_UNVERIFIED_MIRROR:-0}" == "true" ]]; then
+      echo "[servermonitor-agent] warning: cannot verify mirror freshness against official repo; continuing because ALLOW_UNVERIFIED_MIRROR=1" >&2
+      return 0
+    fi
+    echo "[servermonitor-agent] error: cannot verify that the auto-selected mirror is up to date" >&2
+    echo "[servermonitor-agent]   mirror HEAD:   ${cloned:-unknown}" >&2
+    echo "[servermonitor-agent]   official repo is unreachable from this machine" >&2
+    echo "[servermonitor-agent] set ALLOW_UNVERIFIED_MIRROR=1 to accept the risk (may install an older version)" >&2
+    echo "[servermonitor-agent] or set REPO_URL=$DEFAULT_REPO_URL / AUTO_GIT_MIRROR=0 with a working proxy" >&2
+    return 1
   fi
   if [[ -n "$cloned" && "$cloned" != "$official" ]]; then
     echo "[servermonitor-agent] error: selected mirror is stale" >&2
@@ -211,6 +219,8 @@ github mirror env:
   REPO_MIRRORS=https://github.com/...,https://ghfast.top/https://github.com/...
   GIT_MIRROR_PROBE_TIMEOUT=5
   GIT_CLONE_ATTEMPTS=3
+  # allow installing from a mirror when the official repo is unreachable (may be stale)
+  ALLOW_UNVERIFIED_MIRROR=1
 EOF
   exit 1
 fi

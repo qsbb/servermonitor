@@ -210,7 +210,13 @@ Windows 可运行：
 | macOS launchd agent | `sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 http://YUNZAI:2536/servermonitor/report` |
 | Windows 单文件 exe | 从 Release 下载 `servermonitor-agent.exe`，双击配置并开启开机自启 |
 
-GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试：
+GitHub 源码克隆也支持自动测速加速。安装脚本会用 `git ls-remote` 探测候选镜像，选择最快的地址克隆，失败后还会自动重试。官方仓库可达时始终优先官方地址；如果自动选中了第三方镜像、但官方仓库此刻不可达导致镜像新鲜度无法校验，安装会直接中止（避免把滞后镜像的旧版本当作更新装上）。确认要承担风险时可显式放行：
+
+```bash
+ALLOW_UNVERIFIED_MIRROR=1 \
+  sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 http://YUNZAI:2536/servermonitor/report
+```
+
 
 agent 安装脚本会自动检测本机已有的 systemd / Docker / NSSM / launchd 安装；检测到时进入更新模式。Linux / macOS 更新采用“先装后切”：先在临时目录安装依赖并自检，通过后才停服务切换；任何一步失败都会恢复旧版本并重启。配置与 token 保存在 agent 目录的 `servermonitor-agent.json`（权限 0600），systemd unit / launchd plist 不再内嵌密钥。直接重跑同一条一键命令即可更新。
 

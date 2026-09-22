@@ -297,7 +297,7 @@ exit 1
   assert.doesNotMatch(calls, /systemctl stop/)
 })
 
-test("an unverifiable mirror proceeds with a warning", async () => {
+test("an unverifiable mirror aborts by default instead of silently installing an older version", async () => {
   const sandbox = await makeSandbox()
   const gitLog = path.join(sandbox.dir, "git-url.log")
   await writeExecutable(path.join(sandbox.bin, "git"), `#!/usr/bin/env bash
@@ -318,9 +318,52 @@ exit 1
 `)
   const installDir = path.join(sandbox.dir, "opt", "servermonitor-agent")
   const serviceDir = path.join(sandbox.dir, "systemd")
-  await seedInstall(installDir, 'console.log("old-agent")\\n', { name: "web-01", token: "sm_old_token", reportUrl: "http://old/report" })
+  await seedInstall(installDir, 'console.log("old-agent")\n', { name: "web-01", token: "sm_old_token", reportUrl: "http://old/report" })
   await fs.mkdir(serviceDir, { recursive: true })
-  await fs.writeFile(path.join(serviceDir, "servermonitor-agent.service"), 'Environment="SM_TOKEN=sm_old_token"\\n')
+  await fs.writeFile(path.join(serviceDir, "servermonitor-agent.service"), 'Environment="SM_TOKEN=sm_old_token"\n')
+  const systemctlLog = path.join(sandbox.dir, "systemctl.log")
+
+  const result = runInstaller("scripts/install-agent-linux.sh", sandbox, {
+    INSTALL_DIR: installDir,
+    SERVICE_DIR: serviceDir,
+    STUB_SYSTEMCTL_LOG: systemctlLog,
+    STUB_GIT_LOG: gitLog,
+    STUB_UPSTREAM: sandbox.upstream,
+    REPO_URL: "",
+    AUTO_GIT_MIRROR: "1",
+  })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /cannot verify that the auto-selected mirror is up to date/)
+  assert.match(result.stderr, /ALLOW_UNVERIFIED_MIRROR=1/)
+  assert.match(await fs.readFile(path.join(installDir, "agent.mjs"), "utf8"), /old-agent/)
+  const calls = await fs.readFile(systemctlLog, "utf8").catch(() => "")
+  assert.doesNotMatch(calls, /systemctl stop/)
+})
+
+test("ALLOW_UNVERIFIED_MIRROR=1 lets an unverifiable mirror proceed", async () => {
+  const sandbox = await makeSandbox()
+  const gitLog = path.join(sandbox.dir, "git-url.log")
+  await writeExecutable(path.join(sandbox.bin, "git"), `#!/usr/bin/env bash
+if [[ "$1" == "-C" ]]; then exec /usr/bin/git "$@"; fi
+if [[ "$1" == "ls-remote" ]]; then
+  url="\${@: -2:1}"
+  if [[ "$url" == "https://github.com/qsbb/servermonitor.git" ]]; then exit 1; fi
+  exit 0
+fi
+if [[ "$1" == "clone" ]]; then
+  url="\${@: -2:1}"
+  dest="\${@: -1}"
+  echo "$url" >> "\${STUB_GIT_LOG:?}"
+  cp -a "\${STUB_UPSTREAM:?}" "$dest"
+  exit 0
+fi
+exit 1
+`)
+  const installDir = path.join(sandbox.dir, "opt", "servermonitor-agent")
+  const serviceDir = path.join(sandbox.dir, "systemd")
+  await seedInstall(installDir, 'console.log("old-agent")\n', { name: "web-01", token: "sm_old_token", reportUrl: "http://old/report" })
+  await fs.mkdir(serviceDir, { recursive: true })
+  await fs.writeFile(path.join(serviceDir, "servermonitor-agent.service"), 'Environment="SM_TOKEN=sm_old_token"\n')
 
   const result = runInstaller("scripts/install-agent-linux.sh", sandbox, {
     INSTALL_DIR: installDir,
@@ -330,9 +373,10 @@ exit 1
     STUB_UPSTREAM: sandbox.upstream,
     REPO_URL: "",
     AUTO_GIT_MIRROR: "1",
+    ALLOW_UNVERIFIED_MIRROR: "1",
   })
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stderr, /cannot verify mirror freshness/)
+  assert.match(result.stderr, /ALLOW_UNVERIFIED_MIRROR=1/)
   assert.match(await fs.readFile(path.join(installDir, "agent.mjs"), "utf8"), /new-agent/)
 })
 
