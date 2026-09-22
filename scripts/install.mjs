@@ -4,7 +4,7 @@ import fssync from "node:fs"
 import os from "node:os"
 import crypto from "node:crypto"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
@@ -258,13 +258,41 @@ function parsePlistEnvironment(text) {
   return values
 }
 
+async function readAgentConfigFile(installDir) {
+  const file = path.join(installDir, "servermonitor-agent.json")
+  if (!fssync.existsSync(file)) return null
+  try {
+    const data = JSON.parse(await fs.readFile(file, "utf8"))
+    const values = {
+      SM_NAME: data.name,
+      SM_TOKEN: data.token,
+      SM_REPORT_URL: data.reportUrl,
+      SM_INTERVAL: data.interval,
+      SM_SLOW_INTERVAL: data.slowInterval,
+      SM_TIMEOUT: data.timeout,
+    }
+    for (const key of Object.keys(values)) {
+      if (values[key] === null || values[key] === undefined || values[key] === "") delete values[key]
+      else values[key] = String(values[key])
+    }
+    return values
+  } catch {
+    return null
+  }
+}
+
 async function detectExistingAgent(mode) {
   if (mode === "linux-systemd") {
-    const serviceFile = "/etc/systemd/system/servermonitor-agent.service"
+    const serviceDir = process.env.SERVICE_DIR || "/etc/systemd/system"
+    const serviceFile = path.join(serviceDir, "servermonitor-agent.service")
     const installDir = process.env.INSTALL_DIR || "/opt/servermonitor/agent"
     if (!fssync.existsSync(serviceFile) || !fssync.existsSync(path.join(installDir, "agent.mjs"))) return null
     try {
-      const env = parseSystemdEnvironment(await fs.readFile(serviceFile, "utf8"))
+      // 新版本把 token 放在 agent 目录的 json 里，旧版本才写在 unit 的 Environment=
+      let env = await readAgentConfigFile(installDir)
+      if (!env) {
+        try { env = parseSystemdEnvironment(await fs.readFile(serviceFile, "utf8")) } catch { env = {} }
+      }
       return { kind: "Linux systemd", installDir, values: env }
     } catch { return null }
   }
@@ -279,11 +307,15 @@ async function detectExistingAgent(mode) {
   }
 
   if (mode === "macos") {
-    const plist = "/Library/LaunchDaemons/com.servermonitor.agent.plist"
+    const launchdDir = process.env.LAUNCHD_DIR || "/Library/LaunchDaemons"
+    const plist = path.join(launchdDir, "com.servermonitor.agent.plist")
     const installDir = process.env.INSTALL_DIR || "/opt/servermonitor/agent"
     if (!fssync.existsSync(plist) || !fssync.existsSync(path.join(installDir, "agent.mjs"))) return null
     try {
-      const env = parsePlistEnvironment(await fs.readFile(plist, "utf8"))
+      let env = await readAgentConfigFile(installDir)
+      if (!env) {
+        try { env = parsePlistEnvironment(await fs.readFile(plist, "utf8")) } catch { env = {} }
+      }
       return { kind: "macOS launchd", installDir, values: env }
     } catch { return null }
   }
@@ -472,7 +504,12 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(`\n[servermonitor-installer] ${err.message || err}`)
-  process.exit(1)
-})
+export { detectExistingAgent, readAgentConfigFile }
+
+const isMainModule = Boolean(process.argv[1]) && pathToFileURL(process.argv[1]).href === import.meta.url
+if (isMainModule) {
+  main().catch(err => {
+    console.error(`\n[servermonitor-installer] ${err.message || err}`)
+    process.exit(1)
+  })
+}
