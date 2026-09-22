@@ -1,0 +1,58 @@
+name: build-exe
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install agent dependencies
+        working-directory: agent
+        run: npm ci --omit=dev
+
+      - name: Check source and package versions match
+        shell: pwsh
+        run: |
+          $source = (Select-String -Path agent/agent.mjs -Pattern 'AGENT_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          $package = (Get-Content agent/package.json -Raw | ConvertFrom-Json).version
+          if ($source -ne $package) { throw "version mismatch: agent.mjs=$source package.json=$package" }
+          Write-Host "servermonitor agent version: $source"
+
+      - name: Build Windows exe
+        working-directory: agent
+        run: npx --yes pkg@5.8.1 . --targets node18-win-x64 --output ../dist/servermonitor-agent.exe
+
+      - name: Smoke test exe
+        shell: pwsh
+        run: |
+          $exe = "dist/servermonitor-agent.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          if ((Get-Item $exe).Length -lt 10MB) { throw "exe too small" }
+          & $exe --name ci-smoke --dry-run | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "exe dry-run failed with $LASTEXITCODE" }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servermonitor-agent-windows
+          path: dist/servermonitor-agent.exe
+          if-no-files-found: error
+
+      - name: Attach exe to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/servermonitor-agent.exe

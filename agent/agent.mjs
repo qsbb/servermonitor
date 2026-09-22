@@ -854,7 +854,8 @@ async function main() {
   }
 }
 
-const isMainModule = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url
+// pkg 打包后 import.meta.url 与 argv[1] 不一致，必须额外识别 process.pkg
+const isMainModule = Boolean(process.pkg) || (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
 if (isMainModule) {
   await main().catch(err => {
     console.error(`[servermonitor-agent] fatal: ${err.stack || err}`)

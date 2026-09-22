@@ -66,6 +66,7 @@ npm install --omit=dev
 - 虚拟显示适配器（GameViewer / MuMu / Meta Virtual / Zako / Sunshine / Parsec / DisplayLink / VirtualBox / VMware / Hyper-V / Microsoft Basic 等）会被过滤，避免当作真实显卡。
 - 内存可用量：Windows 下 Node `os.freemem()` 等价于系统 Available；异常时回退 `Win32_PerfFormattedData_PerfOS_Memory.AvailableMBytes` / `\Memory\Available Bytes`。不要用 `total - used` 反推。
 - 多卡占用率不使用 `GPU Engine phys_N` 序号硬套，避免多卡张冠李戴。
+- Windows exe 由 `.github/workflows/build-exe.yml` 在 `v*` tag 时构建并附加到 Release；构建前会校验 `AGENT_VERSION` 与 `agent/package.json` 版本一致。
 
 ## 命令行启动
 
