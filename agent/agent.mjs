@@ -965,7 +965,9 @@ async function main() {
 // pkg 打包后 import.meta.url 与 argv[1] 不一致，必须额外识别 process.pkg
 const isMainModule = Boolean(process.pkg) || (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
 if (isMainModule) {
-  await main().catch(err => {
+  // 注意：这里不能使用顶层 await。Windows exe 需要把 agent 打成 CJS（pkg 不支持 ESM 入口），
+  // 而 CJS 打包不允许 top-level await；主循环内部的定时器本身会保持进程存活。
+  main().catch(err => {
     console.error(`[servermonitor-agent] fatal: ${err.stack || err}`)
     process.exit(1)
   })

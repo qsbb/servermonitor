@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node agent.mjs",
     "dry-run": "node agent.mjs --dry-run",
-    "build:exe": "pkg . --targets node18-win-x64 --output ../dist/servermonitor-agent.exe"
+    "build:exe": "node build-exe.mjs"
   },
   "bin": "agent.mjs",
   "pkg": {

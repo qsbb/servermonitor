@@ -33,7 +33,7 @@ jobs:
 
       - name: Build Windows exe
         working-directory: agent
-        run: npx --yes pkg@5.8.1 . --targets node18-win-x64 --output ../dist/servermonitor-agent.exe
+        run: node build-exe.mjs
 
       - name: Smoke test exe
         shell: pwsh
