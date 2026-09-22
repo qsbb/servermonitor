@@ -18,6 +18,8 @@ import {
   scanOffline as scanOfflineModel,
   persist as persistModel,
   buildAddServerReply,
+  buildServerCommand,
+  buildServerCommandReply,
   makeAgentCommand,
   normalizeReportUrl,
   parseAddServerExtra,
@@ -87,6 +89,7 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态列表$", fnc: "list", log: false },
         { reg: "^#?服务器状态待绑定$", fnc: "pending", permission: "master", log: false },
         { reg: "^#?服务器状态添加\\s+(\\S{1,32})(?:\\s+(.+))?$", fnc: "add", permission: "master", log: false },
+        { reg: "^#?服务器状态命令\\s+(\\S{1,32})$", fnc: "command", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{1,32})\\s+(\\S{8,128})(?:\\s+(.+))?$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{8,128})$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态改名\\s+(\\S{1,32})\\s+(\\S{1,32})$", fnc: "rename", permission: "master", log: false },
@@ -214,7 +217,8 @@ export class servermonitor extends plugin {
       `#服务器状态列表        列出已注册服务器`,
       `#服务器状态帮助        查看本帮助`,
       `#服务器状态检查        查看插件加载和配置`,
-      `#服务器状态令牌        查看共享上报 token`,
+      `#服务器状态令牌        共享 token 已停用（迁移说明）`,
+      `#服务器状态命令 <名称>  主人私聊重新获取 token 与启动命令`,
       `#服务器状态添加 <名称> [上报地址] [备注]  主人私聊添加服务器`,
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态绑定 <token>  按子服务器上报名称绑定`,
@@ -246,27 +250,35 @@ export class servermonitor extends plugin {
       `当前展示：${entries.map(i => i.name).join("、") || "空"}`,
       `public_status：${config.public_status ? "true" : "false"}`,
       `include_local：${config.include_local ? "true" : "false"}`,
-      `shared_token：${config.shared_token ? "已生成" : "未生成"}`,
+      `shared_token：已停用${config.shared_token ? "（旧配置仍存在，仅用于识别）" : ""}`,
       `runtime.render：${this.e?.runtime?.render ? "可用" : "未检测到"}`,
     ].join("\n"))
   }
 
   async token() {
     if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行：#服务器状态令牌")
-    const config = await loadConfig(true)
-    const baseUrl = String(cfg?.server?.url || "http://127.0.0.1:2536").replace(/\/+$/, "")
-    const reportUrl = `${baseUrl}${getReportUrlPath()}`
     return this.reply([
-      `【${PLUGIN_NAME}】共享上报 token`,
-      `token：${config.shared_token}`,
-      `上报地址：${reportUrl}`,
-      `说明：agent 使用这个 token 上报时，会按 --name / SM_NAME 自动注册服务器。`,
-      `另一种方式：部署机器先生成 token，再私聊执行 #服务器状态绑定 <名称> <token>。`,
-      `Linux一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-linux.sh) web-01 ${config.shared_token} ${reportUrl}`,
-      `Docker一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-docker.sh) web-01 ${config.shared_token} ${reportUrl}`,
-      `macOS一键：sudo bash <(curl -fsSL https://raw.githubusercontent.com/qsbb/servermonitor/main/scripts/install-agent-macos.sh) mac-01 ${config.shared_token} ${reportUrl}`,
-      `Windows：运行 install.ps1 后填入 win-01、上方 token、上方上报地址`,
+      "【servermonitor】共享 token 已停用",
+      "共享 token 无法区分具体主机，已被一机一 token 取代。",
+      "如果已有服务器之前用共享 token 自动注册过，可直接执行：",
+      "#服务器状态命令 <名称>",
+      "获取该服务器已有的独立 token 和 agent 启动命令。",
+      "新服务器请在服务器侧生成 token，再执行 #服务器状态绑定 <token>，或使用 #服务器状态添加 <名称> <上报地址>。",
     ].join("\n"))
+  }
+
+  async command() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?服务器状态命令\s+(\S{1,32})$/)
+    const name = args?.[0]?.trim()
+    if (!name) return false
+    if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行此命令")
+    try {
+      const info = await buildServerCommand(name, { configuredUrl: cfg?.server?.url || "" })
+      return this.reply(buildServerCommandReply(info))
+    } catch (err) {
+      return this.reply(`获取命令失败：${err.message || err}`)
+    }
   }
 
   async add() {
@@ -282,7 +294,7 @@ export class servermonitor extends plugin {
     try {
       const configuredAddress = String(cfg?.server?.url || "http://127.0.0.1:2536")
       const reportUrl = normalizeReportUrl(requestedAddress || configuredAddress)
-      const item = await addServer(name, note)
+      const item = await addServer(name, note, reportUrl)
       const command = makeAgentCommand({
         reportUrl,
         name: item.name,
@@ -312,7 +324,10 @@ export class servermonitor extends plugin {
     if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行绑定命令")
 
     try {
-      const item = name ? await bindServerToken(name, token, note) : await bindServerToken(token)
+      const configuredAddress = normalizeReportUrl(cfg?.server?.url || "http://127.0.0.1:2536")
+      const item = name
+        ? await bindServerToken(name, token, note, configuredAddress)
+        : await bindServerToken(token, "", "设备侧生成 token", configuredAddress)
       return this.reply([
         item.alreadyBound ? `token 已绑定服务器【${item.name}】` : `已绑定服务器【${item.name}】`,
         `token：${item.token}`,

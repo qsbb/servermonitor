@@ -13,7 +13,9 @@ export const PENDING_FILE = path.join(DATA_DIR, "pending.json")
 const DEFAULT_CONFIG = {
   admins: [],
   servers: [],
-  shared_token: "",
+  shared_token: "", // deprecated: parsed for migration warnings only, never generated or written
+  trusted_proxies: [],
+  report_enabled: true,
   page_size: 8,
   offline_timeout: 30,
   public_status: false,
@@ -98,6 +100,11 @@ function parseConfigText(raw) {
 
     if (indent === 0) {
       currentServer = null
+      if (/^trusted_proxies:\s*\[\]\s*$/.test(line)) {
+        parsed.trusted_proxies = []
+        section = null
+        continue
+      }
       if (/^admins:\s*\[\]\s*$/.test(line)) {
         parsed.admins = []
         section = null
@@ -111,6 +118,11 @@ function parseConfigText(raw) {
       if (line === "admins:") {
         parsed.admins = []
         section = "admins"
+        continue
+      }
+      if (line === "trusted_proxies:") {
+        parsed.trusted_proxies = []
+        section = "trusted_proxies"
         continue
       }
       if (line === "servers:") {
@@ -136,6 +148,11 @@ function parseConfigText(raw) {
 
     if (section === "admins") {
       if (line.startsWith("- ")) parsed.admins.push(String(parseScalar(line.slice(2))))
+      continue
+    }
+
+    if (section === "trusted_proxies") {
+      if (line.startsWith("- ")) parsed.trusted_proxies.push(String(parseScalar(line.slice(2))))
       continue
     }
 
@@ -180,6 +197,7 @@ function stringifyConfig(config) {
     for (const server of data.servers) {
       lines.push(`  - name: ${yamlString(server.name)}`)
       lines.push(`    token: ${yamlString(server.token)}`)
+      if (server.reportUrl) lines.push(`    reportUrl: ${yamlString(server.reportUrl)}`)
       lines.push(`    note: ${yamlString(server.note || "")}`)
       lines.push(`    createdAt: ${Number(server.createdAt) || Date.now()}`)
       if (Number(server.boundAt)) lines.push(`    boundAt: ${Number(server.boundAt)}`)
@@ -189,11 +207,17 @@ function stringifyConfig(config) {
     lines.push("servers: []")
   }
 
-  lines.push(`shared_token: ${yamlString(data.shared_token)}`)
+  if (data.trusted_proxies.length) {
+    lines.push("trusted_proxies:")
+    for (const proxy of data.trusted_proxies) lines.push(`  - ${yamlString(proxy)}`)
+  } else {
+    lines.push("trusted_proxies: []")
+  }
   lines.push(`page_size: ${data.page_size}`)
   lines.push(`offline_timeout: ${data.offline_timeout}`)
   lines.push(`public_status: ${data.public_status}`)
   lines.push(`include_local: ${data.include_local}`)
+  lines.push(`report_enabled: ${data.report_enabled}`)
   lines.push("alert:")
   lines.push(`  enabled: ${data.alert.enabled}`)
   lines.push(`  cooldown: ${data.alert.cooldown}`)
@@ -207,12 +231,14 @@ function normalizeServer(item) {
   const name = String(item.name ?? "").trim()
   const token = String(item.token ?? "").trim()
   if (!name || !token) return null
+  const reportUrl = String(item.reportUrl ?? "").trim()
   const out = {
     name,
     token,
     note: String(item.note ?? "").trim(),
     createdAt: Number(item.createdAt) || Date.now(),
   }
+  if (reportUrl) out.reportUrl = reportUrl
   if (Number(item.boundAt)) out.boundAt = Number(item.boundAt)
   if (Number(item.renamedAt)) out.renamedAt = Number(item.renamedAt)
   return out
@@ -234,7 +260,11 @@ export function normalizeConfig(input = {}) {
     ? config.servers.map(normalizeServer).filter(Boolean)
     : []
 
-  base.shared_token = String(config.shared_token || "").trim() || makeToken()
+  base.shared_token = String(config.shared_token || "").trim()
+  base.trusted_proxies = Array.isArray(config.trusted_proxies)
+    ? config.trusted_proxies.map(i => String(i).trim()).filter(Boolean)
+    : []
+  base.report_enabled = toBool(config.report_enabled, base.report_enabled)
   base.page_size = Math.min(16, Math.max(1, toInt(config.page_size, base.page_size)))
   base.offline_timeout = Math.max(5, toInt(config.offline_timeout, base.offline_timeout))
   base.public_status = toBool(config.public_status, base.public_status)
@@ -297,10 +327,6 @@ export async function loadConfig(force = false) {
   }
 
   const data = normalizeConfig(parsed)
-  if (!String(parsed.shared_token || "").trim()) {
-    await atomicWriteFile(CONFIG_FILE, stringifyConfig(data))
-    stat = await fs.stat(CONFIG_FILE)
-  }
   cache.loaded = true
   cache.mtimeMs = stat.mtimeMs
   cache.data = data

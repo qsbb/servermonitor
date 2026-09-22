@@ -1,6 +1,7 @@
 admins: []
 servers: []
-shared_token: ""
+trusted_proxies: []
+report_enabled: true
 page_size: 8
 offline_timeout: 30
 public_status: false

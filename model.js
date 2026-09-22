@@ -12,17 +12,25 @@ const state = globalThis[STATE_KEY] ??= {
   configIndexByToken: new Map(),
   records: new Map(),
   pendingReports: new Map(),
-  bootstrapped: false,
+  bootstrapPromise: null,
   persistedLoaded: false,
   lastPersistAt: 0,
   pendingPersistAt: 0,
+  pendingDirty: false,
   reportRate: new Map(),
+  rateSweepStarted: false,
 }
 const MAX_SERVERS = 64
-const MAX_PENDING_WRITE_MS = 30_000
+const PENDING_WRITE_DEBOUNCE_MS = 10_000
 const MAX_PENDING_ENTRIES = 100
+const MAX_PENDING_PER_IP_MIN = 10
 const MAX_REPORTS_PER_MIN = 60
 const MAX_REPORTS_PER_IP_MIN = 240
+const RATE_MAP_MAX = 10_000
+const RATE_SWEEP_MS = 5 * 60 * 1000
+const PENDING_TOKEN_RE = /^sm_[0-9a-f]{32}$/
+
+let trustedProxyCache = []
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -44,9 +52,35 @@ function timingSafeEqualStrings(a, b) {
   return crypto.timingSafeEqual(left, right)
 }
 
-function clientIp(req) {
-  const forwarded = String(req?.headers?.["x-forwarded-for"] || "").split(",")[0].trim()
-  return forwarded || req?.ip || req?.socket?.remoteAddress || "unknown"
+function normalizeIp(value) {
+  let ip = String(value || "").trim()
+  if (!ip) return ""
+  if (ip.toLowerCase().startsWith("::ffff:")) ip = ip.slice(7)
+  if (ip.startsWith("[")) {
+    const end = ip.indexOf("]")
+    if (end > 0) ip = ip.slice(1, end)
+  } else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(ip)) {
+    ip = ip.slice(0, ip.lastIndexOf(":"))
+  }
+  return ip
+}
+
+export function resolveClientIp(req, trustedProxies = trustedProxyCache) {
+  const direct = normalizeIp(req?.socket?.remoteAddress || req?.ip || "")
+  const trusted = Array.isArray(trustedProxies) ? trustedProxies.map(normalizeIp).filter(Boolean) : []
+  if (!direct || !trusted.includes(direct)) return direct || "unknown"
+  const forwarded = String(req?.headers?.["x-forwarded-for"] || "")
+    .split(",")
+    .map(normalizeIp)
+    .filter(Boolean)
+  for (let i = forwarded.length - 1; i >= 0; i--) {
+    if (!trusted.includes(forwarded[i])) return forwarded[i]
+  }
+  return direct
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex").slice(0, 16)
 }
 
 function rateLimit(key, limit, windowMs = 60_000) {
@@ -61,10 +95,27 @@ function rateLimit(key, limit, windowMs = 60_000) {
   return true
 }
 
-function allowReport(req, token) {
-  const ip = clientIp(req)
+export function sweepRateLimits(now = Date.now()) {
+  for (const [key, item] of state.reportRate) {
+    if (!item || now > item.resetAt) state.reportRate.delete(key)
+  }
+  if (state.reportRate.size <= RATE_MAP_MAX) return
+  const ordered = [...state.reportRate.entries()].sort((a, b) => (a[1].resetAt || 0) - (b[1].resetAt || 0))
+  for (const [key] of ordered.slice(0, state.reportRate.size - RATE_MAP_MAX)) state.reportRate.delete(key)
+}
+
+function startRateSweep() {
+  if (state.rateSweepStarted) return
+  state.rateSweepStarted = true
+  const timer = setInterval(() => sweepRateLimits(), RATE_SWEEP_MS)
+  timer.unref?.()
+}
+
+startRateSweep()
+
+function allowReport(ip, token) {
   if (!rateLimit(`ip:${ip}`, MAX_REPORTS_PER_IP_MIN)) return false
-  if (!rateLimit(`token:${token || ""}:${ip}`, MAX_REPORTS_PER_MIN)) return false
+  if (!rateLimit(`token:${hashToken(token)}:${ip}`, MAX_REPORTS_PER_MIN)) return false
   return true
 }
 
@@ -128,6 +179,7 @@ async function hydrateConfig() {
   await ensureConfigExists()
   const config = await loadConfig()
   state.config = config
+  trustedProxyCache = Array.isArray(config.trusted_proxies) ? config.trusted_proxies : []
   buildIndexes(config)
   return config
 }
@@ -194,6 +246,8 @@ async function persistPending() {
   state.pendingReports = new Map(pending.map(item => [item.token, item]))
   const payload = { v: 1, savedAt: now, pending }
   await atomicWriteJson(PENDING_FILE, payload)
+  state.pendingDirty = false
+  state.pendingPersistAt = Date.now()
 }
 
 async function savePendingReport(token, snap, receivedAt = Date.now()) {
@@ -203,27 +257,24 @@ async function savePendingReport(token, snap, receivedAt = Date.now()) {
   const prev = state.pendingReports.get(cleanToken)
   const item = { token: cleanToken, name: cleanName, snap, lastSeen: receivedAt }
   state.pendingReports.set(cleanToken, item)
-  if (state.pendingReports.size > MAX_PENDING_ENTRIES) {
-    const ordered = [...state.pendingReports.values()].sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
-    for (const stale of ordered.slice(MAX_PENDING_ENTRIES)) state.pendingReports.delete(stale.token)
-  }
-  const shouldPersist = !prev
-    || prev.name !== cleanName
-    || receivedAt - (prev.lastSeen || 0) >= MAX_PENDING_WRITE_MS
-    || Date.now() - state.pendingPersistAt >= MAX_PENDING_WRITE_MS
-  if (shouldPersist) {
-    await persistPending()
-    state.pendingPersistAt = Date.now()
-  }
+  state.pendingDirty = true
+  const shouldPersist = Date.now() - (state.pendingPersistAt || 0) >= PENDING_WRITE_DEBOUNCE_MS
+  if (shouldPersist) await persistPending()
   return item
 }
 
 async function bootstrap() {
-  if (state.bootstrapped) return
-  state.bootstrapped = true
-  await hydratePersisted()
-  await hydratePending()
-  await hydrateConfig()
+  if (!state.bootstrapPromise) {
+    state.bootstrapPromise = (async () => {
+      await hydratePersisted()
+      await hydratePending()
+      await hydrateConfig()
+    })().catch(err => {
+      state.bootstrapPromise = null
+      throw err
+    })
+  }
+  return state.bootstrapPromise
 }
 
 async function refreshConfig() {
@@ -873,19 +924,22 @@ export async function listServersText() {
   return lines.join("\n")
 }
 
-export async function addServer(name, note = "") {
+export async function addServer(name, note = "", reportUrl = "") {
   const cleanName = sanitizeServerName(name)
   if (!cleanName) throw new Error("服务器名不能为空")
   const cleanNote = String(note || "").trim()
+  const cleanReportUrl = String(reportUrl || "").trim()
   const config = await updateConfig(current => {
     if (current.servers.some(item => item.name === cleanName)) throw new Error(`服务器【${cleanName}】已存在`)
     if (current.servers.length >= MAX_SERVERS) throw new Error(`服务器数量已达上限（${MAX_SERVERS}）`)
-    current.servers.push({
+    const item = {
       name: cleanName,
       token: makeToken(),
       note: cleanNote,
       createdAt: Date.now(),
-    })
+    }
+    if (cleanReportUrl) item.reportUrl = cleanReportUrl
+    current.servers.push(item)
     return current
   })
   await refreshConfig()
@@ -893,7 +947,7 @@ export async function addServer(name, note = "") {
   return config.servers.find(item => item.name === cleanName)
 }
 
-export async function bindServerToken(nameOrToken, token = "", note = "设备侧生成 token") {
+export async function bindServerToken(nameOrToken, token = "", note = "设备侧生成 token", reportUrl = "") {
   await bootstrap()
   let cleanName = sanitizeServerName(nameOrToken)
   let cleanToken = String(token || "").trim()
@@ -912,6 +966,7 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
   }
 
   const cleanNote = String(note || "").trim() || "设备侧生成 token"
+  const cleanReportUrl = String(reportUrl || "").trim()
   if (!cleanName) throw new Error("服务器名不能为空")
   if (!cleanToken || cleanToken.length < 8) throw new Error("token格式错误")
 
@@ -923,14 +978,17 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
       if (existing.token !== cleanToken) throw new Error(`服务器【${cleanName}】已绑定其他 token`)
       existing.note = cleanNote
       existing.boundAt = Date.now()
+      if (cleanReportUrl) existing.reportUrl = cleanReportUrl
     } else {
       if (current.servers.length >= MAX_SERVERS) throw new Error(`服务器数量已达上限（${MAX_SERVERS}）`)
-      current.servers.push({
+      const item = {
         name: cleanName,
         token: cleanToken,
         note: cleanNote,
         createdAt: Date.now(),
-      })
+      }
+      if (cleanReportUrl) item.reportUrl = cleanReportUrl
+      current.servers.push(item)
     }
     return current
   })
@@ -993,48 +1051,34 @@ export async function removeServer(name) {
 export async function handleReport(req, res) {
   const log = globalThis.logger || console
   try {
-    await bootstrap()
-    let config = await refreshConfig()
     const token = String(req.get("X-SM-Token") || "").trim()
     const tokenTail = token ? token.slice(-6) : ""
+    const ip = resolveClientIp(req)
+    if (!allowReport(ip, token)) return res.status(429).json({ ok: false, msg: "too many requests" })
     if (token.length > 128) return res.status(422).json({ ok: false, msg: "token too long" })
-    if (!allowReport(req, token)) return res.status(429).json({ ok: false, msg: "too many requests" })
+
+    await bootstrap()
+    const config = await refreshConfig()
+    if (!config.report_enabled) {
+      return res.status(503).json({ ok: false, msg: "report ingestion disabled" })
+    }
+
+    const isSharedToken = Boolean(config.shared_token && token && timingSafeEqualStrings(token, config.shared_token))
+    if (isSharedToken) {
+      log.warn?.(`[servermonitor] shared token disabled token=...${tokenTail}`)
+      return res.status(401).json({
+        ok: false,
+        msg: "shared token disabled",
+        hint: "共享 token 已停用；请使用独立 token，可在 Yunzai 私聊执行 #服务器状态命令 <名称> 获取",
+      })
+    }
+
     const body = req.body
     if (!body || typeof body !== "object" || body.v !== 1) {
       return res.status(422).json({ ok: false, msg: "bad schema" })
     }
 
-    let server = resolveConfigByToken(token)
-    const isSharedToken = token && timingSafeEqualStrings(token, config.shared_token)
-    if (!server && isSharedToken) {
-      const autoName = sanitizeServerName(body.name || body.os?.hostname)
-      if (!autoName) return res.status(422).json({ ok: false, msg: "missing name" })
-      const existingByName = resolveConfigServer(autoName)
-      if (existingByName) {
-        log.warn?.(`[servermonitor] report rejected: shared token name conflict ${autoName} token=...${tokenTail}`)
-        return res.status(403).json({ ok: false, msg: "name conflict" })
-      }
-      if ((config.servers?.length || 0) >= MAX_SERVERS) {
-        log.warn?.(`[servermonitor] report rejected: server cap reached token=...${tokenTail}`)
-        return res.status(429).json({ ok: false, msg: "server limit reached" })
-      }
-      server = resolveConfigServer(autoName)
-      if (!server) {
-        config = await updateConfig(current => {
-          if (!current.servers.some(item => item.name === autoName)) {
-            current.servers.push({
-              name: autoName,
-              token: makeToken(),
-              note: "共享 token 自动注册",
-              createdAt: Date.now(),
-            })
-          }
-          return current
-        })
-        await refreshConfig()
-        server = config.servers.find(item => item.name === autoName) || resolveConfigServer(autoName)
-      }
-    }
+    const server = resolveConfigByToken(token)
 
     const snap = sanitizeSnapshot(body)
     if (isEmptySnapshot(snap)) {
@@ -1043,6 +1087,18 @@ export async function handleReport(req, res) {
     }
 
     if (!server) {
+      if (!PENDING_TOKEN_RE.test(token)) {
+        log.warn?.(`[servermonitor] report rejected: invalid token format token=...${tokenTail}`)
+        return res.status(401).json({ ok: false, msg: "token invalid" })
+      }
+      if (!rateLimit(`pending:${ip}`, MAX_PENDING_PER_IP_MIN)) {
+        log.warn?.(`[servermonitor] report rejected: pending rate limit ip=${ip}`)
+        return res.status(429).json({ ok: false, msg: "pending rate limit" })
+      }
+      if (state.pendingReports.size >= MAX_PENDING_ENTRIES && !state.pendingReports.has(token)) {
+        log.warn?.(`[servermonitor] report rejected: pending queue full size=${state.pendingReports.size}`)
+        return res.status(429).json({ ok: false, msg: "pending queue full" })
+      }
       const pending = await savePendingReport(token, snap, Date.now())
       if (pending) {
         log.info?.(`[servermonitor] report pending saved: name=${pending.name} token=...${tokenTail}`)
@@ -1076,8 +1132,8 @@ export async function handleReport(req, res) {
       }
     }
 
-    log.info?.(`[servermonitor] report accepted: name=${server.name} token=...${tokenTail}${isSharedToken ? " shared" : ""}`)
-    return res.json({ ok: true, name: server.name, auto: isSharedToken })
+    log.info?.(`[servermonitor] report accepted: name=${server.name} token=...${tokenTail}`)
+    return res.json({ ok: true, name: server.name, auto: false })
   } catch (err) {
     ;(globalThis.logger || console).error("[servermonitor] report failed", err)
     return res.status(500).json({ ok: false, msg: "internal error" })
@@ -1129,6 +1185,7 @@ export async function scanOffline() {
 export async function persist() {
   try {
     await bootstrap()
+    await flushPending()
     await fs.mkdir(DATA_DIR, { recursive: true })
     const config = await refreshConfig()
     const payload = {
@@ -1153,6 +1210,12 @@ export async function persist() {
     ;(globalThis.logger || console).warn("[servermonitor] persist failed", err)
     return null
   }
+}
+
+export async function flushPending() {
+  if (!state.pendingDirty) return false
+  await persistPending()
+  return true
 }
 
 export async function loadPersistedSnapshotFile() {
@@ -1223,6 +1286,45 @@ export function buildAddServerReply({ name, note = "", token, reportUrl, command
     "",
     `注意：请勿公开专属令牌；上报地址必须能被 ${name} 访问。`,
   ].filter(line => line !== null).join("\n")
+}
+
+export function isLoopbackReportUrl(value) {
+  try {
+    const host = new URL(String(value || "")).hostname.toLowerCase()
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0"
+  } catch {
+    return false
+  }
+}
+
+export function buildServerCommandReply({ name, token, reportUrl, command, warning = "" }) {
+  return [
+    `【服务器命令】${name}`,
+    "",
+    `上报地址：${reportUrl}`,
+    `专属令牌：${token}`,
+    "",
+    "在服务器的 agent 目录执行：",
+    "",
+    command,
+    warning ? "" : null,
+    warning || null,
+  ].filter(line => line !== null).join("\n")
+}
+
+export async function buildServerCommand(name, { configuredUrl = "" } = {}) {
+  await bootstrap()
+  const config = await refreshConfig()
+  const conf = resolveConfigServer(name)
+  if (!conf) throw new Error(`未找到服务器【${name}】`)
+  const base = conf.reportUrl || configuredUrl
+  if (!base) throw new Error(`服务器【${conf.name}】没有保存上报地址，请重新执行 #服务器状态添加 <名称> <地址>`)
+  const reportUrl = normalizeReportUrl(base)
+  const command = makeAgentCommand({ reportUrl, name: conf.name, token: conf.token, interval: 10 })
+  const warning = isLoopbackReportUrl(reportUrl)
+    ? "当前上报地址是回环地址，远程 agent 无法访问；请重新添加并填写公网/内网地址。"
+    : ""
+  return { name: conf.name, token: conf.token, reportUrl, command, warning, config }
 }
 
 export function sortEntries(entries) {
