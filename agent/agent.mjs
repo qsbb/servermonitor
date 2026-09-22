@@ -6,7 +6,7 @@ import path from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { createInterface } from "node:readline/promises"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const execFileAsync = promisify(execFile)
 const AGENT_VERSION = "0.1.18"
@@ -33,17 +33,28 @@ function parseArgs(argv = []) {
 }
 
 function help() {
-  return `usage: agent.exe run                       使用配置文件常驻运行
-       agent.exe                           打开 Windows 配置菜单
-       node agent.mjs --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--dry-run] [--once]
+  const bin = process.pkg ? "servermonitor-agent.exe" : "node agent.mjs"
+  return `usage: ${bin} --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--once]
+       ${bin} --dry-run [--name <name>]     只采集并打印 JSON，不上报
+       ${bin} run                            使用 servermonitor-agent.json 常驻运行
+       ${bin}                                Windows 下打开配置菜单
 
-config: servermonitor-agent.json（与 exe 同目录）
+config: servermonitor-agent.json（与 agent.mjs 同目录）
 env: SM_NAME, SM_TOKEN, SM_REPORT_URL, SM_INTERVAL, SM_SLOW_INTERVAL, SM_TIMEOUT, SM_DRY_RUN, SM_ONCE`
 }
 
 function envValue(name, fallback = "") {
   const value = process.env[name]
   return value === undefined || value === null || value === "" ? fallback : value
+}
+
+export function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue
+    const text = String(value).trim()
+    if (text) return text
+  }
+  return ""
 }
 
 function boolValue(value) {
@@ -86,7 +97,7 @@ function clipPercent(value) {
   return Math.max(0, Math.min(100, +n.toFixed(1)))
 }
 
-function pickActiveInterface(list = []) {
+export function pickActiveInterface(list = []) {
   const bad = /^(lo|docker|veth|br-|virbr|tun|tap|vmnet|vboxnet|utun|awdl|llw)/i
   const candidates = list.filter(item => item?.iface && !bad.test(String(item.iface)))
   const source = candidates.length ? candidates : list
@@ -98,9 +109,9 @@ function pickActiveInterface(list = []) {
   return sorted[0] || null
 }
 
-function filterDisks(list = []) {
+export function filterDisks(list = []) {
   const badType = /^(tmpfs|devtmpfs|overlay|squashfs|ramfs|efivarfs|autofs|vfat|iso9660)$/i
-  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers)/i
+  const badMount = /^(\/proc|\/sys|\/dev|\/run|\/snap|\/host\/proc|\/host\/sys|\/host\/dev|\/host\/run|\/var\/lib\/docker|\/var\/lib\/containers|\/etc\/(hosts|hostname|resolv\.conf)$)/i
   const seen = new Set()
   return list
     .filter(item => item && !badType.test(String(item.type || "")) && !badMount.test(String(item.mount || "")))
@@ -122,6 +133,54 @@ function filterDisks(list = []) {
       return (Number(b.used) / Number(b.total)) - (Number(a.used) / Number(a.total))
     })
     .slice(0, 8)
+}
+
+export async function collectDiskLinuxDf(timeout = 5000) {
+  const { stdout } = await execFileAsync("df", ["-kPTx", "squashfs"], { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
+  const rows = []
+  for (const line of String(stdout || "").split(/\r?\n/).slice(1)) {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length < 7) continue
+    const totalKb = Number(fields[2])
+    const usedKb = Number(fields[3])
+    if (!Number.isFinite(totalKb) || !Number.isFinite(usedKb) || totalKb <= 0) continue
+    rows.push({ mount: fields.slice(6).join(" "), type: fields[1], used: usedKb * 1024, size: totalKb * 1024 })
+  }
+  return filterDisks(rows)
+}
+
+export async function collectDisks() {
+  if (process.platform === "linux" && fssync.existsSync("/host") && typeof fs.statfs === "function") {
+    try {
+      const stats = await fs.statfs("/host")
+      const total = Number(stats.blocks) * Number(stats.bsize)
+      const free = Number(stats.bavail) * Number(stats.bsize)
+      if (Number.isFinite(total) && total > 0) {
+        return [{ mount: "/", used: gb(Math.max(0, total - free)), total: gb(total) }]
+      }
+    } catch {}
+  }
+  if (process.platform === "linux") {
+    const rows = await safe(() => collectDiskLinuxDf(), null, 6000)
+    if (Array.isArray(rows)) return rows
+  }
+  const raw = await safe(() => si.fsSize(), [], 5000)
+  return filterDisks(Array.isArray(raw) ? raw : [])
+}
+
+async function collectNetwork() {
+  const interfaces = await safe(() => si.networkInterfaces(), [], 5000)
+  const names = (Array.isArray(interfaces) ? interfaces : []).map(item => item?.iface).filter(Boolean)
+  const stats = await safe(() => si.networkStats(names.length ? names : undefined), [], 8000)
+  const iface = pickActiveInterface(Array.isArray(stats) ? stats : [])
+  if (!iface) return null
+  return {
+    iface: iface.iface || null,
+    rxSec: mb(iface.rx_sec ?? iface.rx_sec_total ?? null),
+    txSec: mb(iface.tx_sec ?? iface.tx_sec_total ?? null),
+    rxTotal: gb(iface.rx_bytes),
+    txTotal: gb(iface.tx_bytes),
+  }
 }
 
 function formatLoad(load) {
@@ -152,7 +211,10 @@ async function safe(fn, fallback = null, timeout = 5000) {
         timer.unref?.()
       }),
     ])
-  } catch {
+  } catch (err) {
+    if (/timeout/i.test(String(err?.message || ""))) {
+      console.warn(`[servermonitor-agent] collection timeout after ${timeout}ms`)
+    }
     return fallback
   } finally {
     clearTimeout(timer)
@@ -188,17 +250,33 @@ async function collectGpuFromNvidiaSmi(timeout = 5000) {
   }
 }
 
-function normalizeVram(value) {
+export function normalizeVram(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return null
   if (n === 0) return 0
-  if (n > 1024 * 1024 * 1024) return +(n / 1024 ** 3).toFixed(1)
-  if (n > 1024 * 1024) return +(n / 1024 ** 2).toFixed(1)
-  if (n > 1024) return +(n / 1024).toFixed(1)
-  return +n.toFixed(1)
+  const gigabytes = +(n / 1024).toFixed(1)
+  return gigabytes > 1024 ? null : gigabytes
+}
+
+async function collectGpuFromLspci(timeout = 5000) {
+  if (process.platform !== "linux") return null
+  try {
+    const { stdout } = await execFileAsync("lspci", ["-mm"], { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
+    const gpus = []
+    for (const line of String(stdout || "").split(/\r?\n/)) {
+      const match = line.match(/^(\S+)\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"/)
+      if (!match || !/(VGA|3D|Display)/i.test(match[2])) continue
+      const model = [match[3], match[4]].map(v => v.trim()).filter(Boolean).join(" ").trim()
+      gpus.push({ model: model || "未知 GPU", usage: null, temp: null, memUsed: null, memTotal: null, power: null })
+    }
+    return gpus
+  } catch {
+    return null
+  }
 }
 
 async function collectGpuFallback() {
+  if (process.platform === "linux") return await collectGpuFromLspci()
   const gfx = await safe(() => si.graphics(), null)
   const ctrls = Array.isArray(gfx?.controllers) ? gfx.controllers : []
   if (!ctrls.length) return []
@@ -378,12 +456,11 @@ class Collector {
   async refreshFast(force = false) {
     const now = Date.now()
     if (!force && this.fastCache && now - this.lastFastAt < 3_000) return this.fastCache
-    const [load, mem, netStats] = await Promise.all([
+    const [load, mem, net] = await Promise.all([
       safe(() => si.currentLoad(), null),
       safe(() => si.mem(), null),
-      safe(() => si.networkStats(), []),
+      collectNetwork(),
     ])
-    const iface = pickActiveInterface(netStats)
     this.fastCache = {
       load: process.platform === "win32" ? null : formatLoad(os.loadavg()),
       cpuUsage: clipPercent(load?.currentLoad),
@@ -396,15 +473,7 @@ class Collector {
             swapTotal: gb(mem.swaptotal),
           }
         : null,
-      net: iface
-        ? {
-            iface: iface.iface || null,
-            rxSec: mb(iface.rx_sec ?? iface.rx_sec_total ?? null),
-            txSec: mb(iface.tx_sec ?? iface.tx_sec_total ?? null),
-            rxTotal: gb(iface.rx_bytes),
-            txTotal: gb(iface.tx_bytes),
-          }
-        : null,
+      net,
     }
     this.lastFastAt = now
     return this.fastCache
@@ -414,15 +483,15 @@ class Collector {
     const now = Date.now()
     if (!force && this.slowCache && now - this.lastSlowAt < this.slowInterval) return this.slowCache
     const [disks, temp, gpus] = await Promise.all([
-      safe(() => si.fsSize(), []),
+      collectDisks(),
       collectCpuTemp(),
       collectGpuFromNvidiaSmi(),
     ])
     const gpuList = Array.isArray(gpus) && gpus.length ? gpus : await collectGpuFallback()
     this.slowCache = {
-      disks: filterDisks(disks),
+      disks,
       cpuTemp: temp,
-      gpus: gpuList,
+      gpus: Array.isArray(gpuList) ? gpuList.slice(0, 8) : gpuList,
       cpuPower: await safe(() => collectCpuPowerLinux(this.raplPrev), null, 5000),
     }
     this.lastSlowAt = now
@@ -451,16 +520,16 @@ class Collector {
         temp: slowInfo.cpuTemp,
         power: slowInfo.cpuPower,
       },
-      gpus: slowInfo.gpus,
+      gpus: Array.isArray(slowInfo.gpus) ? slowInfo.gpus.slice(0, 8) : slowInfo.gpus,
       mem: fastInfo.mem,
       net: fastInfo.net,
-      disks: slowInfo.disks,
+      disks: Array.isArray(slowInfo.disks) ? slowInfo.disks.slice(0, 16) : slowInfo.disks,
       load: fastInfo.load,
     }
   }
 }
 
-async function postSnapshot(url, token, payload, timeout = 5000) {
+export async function postSnapshot(url, token, payload, timeout = 5000) {
   const { signal, clear } = timeoutSignal(timeout)
   try {
     const resp = await fetch(url, {
@@ -473,7 +542,11 @@ async function postSnapshot(url, token, payload, timeout = 5000) {
       body: JSON.stringify(payload),
       signal,
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const text = await resp.text().catch(() => "")
+    let data = null
+    try { data = text ? JSON.parse(text) : null } catch {}
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}${text ? `: ${text.slice(0, 120)}` : ""}`)
+    if (!data || data.ok !== true) throw new Error(`invalid response: ${text.slice(0, 120) || "(empty body)"}`)
     return true
   } finally {
     clear()
@@ -586,9 +659,9 @@ async function showWindowsMenu() {
       } else if (num === 3) {
         console.log(await disableWindowsAutostart())
       } else if (num === 4) {
-        const name = String(config.name || envValue("SM_NAME")).trim()
-        const token = String(config.token || envValue("SM_TOKEN")).trim()
-        const reportUrl = String(config.reportUrl || envValue("SM_REPORT_URL")).trim()
+        const name = firstNonEmpty(config.name, envValue("SM_NAME"))
+        const token = firstNonEmpty(config.token, envValue("SM_TOKEN"))
+        const reportUrl = firstNonEmpty(config.reportUrl, envValue("SM_REPORT_URL"))
         if (!name || !token || !reportUrl) {
           console.log("请先完成配置")
           continue
@@ -604,9 +677,9 @@ async function showWindowsMenu() {
         }
       } else if (num === 5) {
         const saved = await loadFileConfig()
-        const name = String(saved.name || envValue("SM_NAME")).trim()
-        const token = String(saved.token || envValue("SM_TOKEN")).trim()
-        const reportUrl = String(saved.reportUrl || envValue("SM_REPORT_URL")).trim()
+        const name = firstNonEmpty(saved.name, envValue("SM_NAME"))
+        const token = firstNonEmpty(saved.token, envValue("SM_TOKEN"))
+        const reportUrl = firstNonEmpty(saved.reportUrl, envValue("SM_REPORT_URL"))
         if (!name || !token || !reportUrl) {
           console.log("请先完成配置")
           continue
@@ -633,7 +706,6 @@ async function showWindowsMenu() {
 
 async function main() {
   const cliArgv = process.argv.slice(2)
-  const runMode = cliArgv.includes("run")
   const args = parseArgs(cliArgv)
   if (args.help) {
     console.log(help())
@@ -647,16 +719,22 @@ async function main() {
 
   const fileConfig = await loadFileConfig()
 
-  const name = String(args.name || envValue("SM_NAME") || fileConfig.name).trim()
-  const token = String(args.token || envValue("SM_TOKEN") || fileConfig.token).trim()
-  const reportUrl = String(args["report-url"] || args.reportUrl || envValue("SM_REPORT_URL") || fileConfig.reportUrl || "http://127.0.0.1:2536/servermonitor/report").trim()
-  const interval = Math.max(5, Number(args.interval || envValue("SM_INTERVAL") || fileConfig.interval) || 10)
-  const slowInterval = Math.max(interval, Number(args["slow-interval"] || args.slowInterval || envValue("SM_SLOW_INTERVAL") || fileConfig.slowInterval) || 30)
-  const timeout = Math.max(1000, Number(args.timeout || envValue("SM_TIMEOUT") || fileConfig.timeout) || 5000)
   const dryRun = Boolean(args["dry-run"] || args.dryRun || boolValue(envValue("SM_DRY_RUN")))
   const once = Boolean(args.once || boolValue(envValue("SM_ONCE")))
+  const name = firstNonEmpty(args.name, envValue("SM_NAME"), fileConfig.name)
+  const token = firstNonEmpty(args.token, envValue("SM_TOKEN"), fileConfig.token)
+  const reportUrl = firstNonEmpty(
+    args["report-url"],
+    args.reportUrl,
+    envValue("SM_REPORT_URL"),
+    fileConfig.reportUrl,
+    "http://127.0.0.1:2536/servermonitor/report",
+  )
+  const interval = Math.max(5, Number(firstNonEmpty(args.interval, envValue("SM_INTERVAL"), fileConfig.interval) || 10))
+  const slowInterval = Math.max(interval, Number(firstNonEmpty(args["slow-interval"], args.slowInterval, envValue("SM_SLOW_INTERVAL"), fileConfig.slowInterval) || 30))
+  const timeout = Math.max(1000, Number(firstNonEmpty(args.timeout, envValue("SM_TIMEOUT"), fileConfig.timeout) || 5000))
 
-  if (!name || !token) {
+  if (!name || (!token && !dryRun)) {
     console.error(help())
     process.exit(1)
   }
@@ -704,7 +782,10 @@ async function main() {
   }
 }
 
-await main().catch(err => {
-  console.error(`[servermonitor-agent] fatal: ${err.stack || err}`)
-  process.exit(1)
-})
+const isMainModule = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url
+if (isMainModule) {
+  await main().catch(err => {
+    console.error(`[servermonitor-agent] fatal: ${err.stack || err}`)
+    process.exit(1)
+  })
+}
