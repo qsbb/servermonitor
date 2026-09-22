@@ -149,15 +149,21 @@ export async function collectDiskLinuxDf(timeout = 5000) {
   return filterDisks(rows)
 }
 
+export function diskUsageFromStatfs(stats) {
+  const bsize = Number(stats?.bsize)
+  const blocks = Number(stats?.blocks)
+  const bfree = Number(stats?.bfree)
+  if (![bsize, blocks, bfree].every(Number.isFinite) || bsize <= 0 || blocks <= 0) return null
+  const total = blocks * bsize
+  const used = Math.max(0, (blocks - bfree) * bsize)
+  return { total, used }
+}
+
 export async function collectDisks() {
   if (process.platform === "linux" && fssync.existsSync("/host") && typeof fs.statfs === "function") {
     try {
-      const stats = await fs.statfs("/host")
-      const total = Number(stats.blocks) * Number(stats.bsize)
-      const free = Number(stats.bavail) * Number(stats.bsize)
-      if (Number.isFinite(total) && total > 0) {
-        return [{ mount: "/", used: gb(Math.max(0, total - free)), total: gb(total) }]
-      }
+      const usage = diskUsageFromStatfs(await fs.statfs("/host"))
+      if (usage) return [{ mount: "/", used: gb(usage.used), total: gb(usage.total) }]
     } catch {}
   }
   if (process.platform === "linux") {
@@ -168,10 +174,11 @@ export async function collectDisks() {
   return filterDisks(Array.isArray(raw) ? raw : [])
 }
 
-async function collectNetwork() {
+export async function collectNetwork() {
   const interfaces = await safe(() => si.networkInterfaces(), [], 5000)
   const names = (Array.isArray(interfaces) ? interfaces : []).map(item => item?.iface).filter(Boolean)
-  const stats = await safe(() => si.networkStats(names.length ? names : undefined), [], 8000)
+  // systeminformation 只接受逗号分隔字符串；传数组会静默返回空数组
+  const stats = await safe(() => si.networkStats(names.length ? names.join(",") : undefined), [], 8000)
   const iface = pickActiveInterface(Array.isArray(stats) ? stats : [])
   if (!iface) return null
   return {
@@ -276,7 +283,7 @@ export function normalizeVram(value, { windowsAdapterRam = false } = {}) {
   return gigabytes > 1024 ? null : gigabytes
 }
 
-const VIRTUAL_GPU_NAME_RE = /(virtual|virtio|vmware|virtualbox|hyper-v|microsoft basic|gameviewer|mumu|meta virtual|zako|sunshine|parsec|displaylink|usb display)/i
+const VIRTUAL_GPU_NAME_RE = /(virtual|virtio|vmware|virtualbox|hyper-v|microsoft basic|gameviewer|mumu|meta virtual|zako|sunshine|parsec|displaylink|usb display|cirrus|qxl|bochs|qemu|standard vga)/i
 const REAL_GPU_VENDOR_RE = /(nvidia|amd|radeon|intel|arc)/i
 
 export function isVirtualGpuName(name) {
@@ -299,7 +306,8 @@ async function collectGpuFromLspci(timeout = 5000) {
       const match = line.match(/^(\S+)\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"/)
       if (!match || !/(VGA|3D|Display)/i.test(match[2])) continue
       const model = [match[3], match[4]].map(v => v.trim()).filter(Boolean).join(" ").trim()
-      gpus.push({ model: model || "未知 GPU", usage: null, temp: null, memUsed: null, memTotal: null, power: null })
+      if (!model || isVirtualGpuName(model)) continue
+      gpus.push({ model, usage: null, temp: null, memUsed: null, memTotal: null, power: null })
     }
     return gpus
   } catch {

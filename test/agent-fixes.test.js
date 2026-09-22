@@ -119,6 +119,10 @@ test("filters virtual display adapters but keeps real GPUs", { skip }, () => {
     "Intel(R) Arc(TM) A770 Graphics",
   ])
   assert.equal(agent.isVirtualGpuName("Sunshine Virtual Display"), true)
+  assert.equal(agent.isVirtualGpuName("Cirrus Logic GD 5446"), true)
+  assert.equal(agent.isVirtualGpuName("Red Hat QXL controller"), true)
+  assert.equal(agent.isVirtualGpuName("Standard VGA Graphics Adapter"), true)
+  assert.equal(agent.isVirtualGpuName("Bochs Display Adapter"), true)
   assert.equal(agent.isVirtualGpuName("NVIDIA GeForce RTX 4070"), false)
 })
 
@@ -134,4 +138,20 @@ test("parses Windows available-memory probe output", { skip }, () => {
   assert.equal(agent.parseWindowsAvailableMBytes("47550\r\n"), 47550)
   assert.equal(agent.parseWindowsAvailableMBytes(""), null)
   assert.equal(agent.parseWindowsAvailableMBytes("abc"), null)
+})
+
+test("collectNetwork returns an active interface on this host", { skip }, async () => {
+  const net = await agent.collectNetwork()
+  assert.ok(net, "expected a network entry (systeminformation needs a comma-joined interface list)")
+  assert.equal(typeof net.iface, "string")
+  assert.ok(net.iface.length > 0)
+})
+
+test("Docker disk usage follows df semantics (bfree, not bavail)", { skip }, () => {
+  assert.deepEqual(agent.diskUsageFromStatfs({ blocks: 100, bfree: 40, bavail: 30, bsize: 1024 }), {
+    total: 102400,
+    used: 61440,
+  })
+  assert.equal(agent.diskUsageFromStatfs({}), null)
+  assert.equal(agent.diskUsageFromStatfs({ blocks: 0, bfree: 0, bsize: 4096 }), null)
 })
