@@ -1,5 +1,5 @@
 <link rel="stylesheet" href="{{pluResPath}}status.css">
-<div id="container" class="{{typeof theme !== 'undefined' && theme === 'light' ? 'theme-light' : ''}}">
+<div id="container" class="{{typeof theme !== 'undefined' && theme === 'light' ? 'theme-light' : ''}}{{pro ? ' is-pro' : ''}}">
   <div class="sb-topbar">
     <div class="sb-topbar-main">
       <div class="sb-overline">SERVER MONITOR</div>
@@ -24,13 +24,15 @@
         <div class="sb-sub">{{s.osText || '—'}}<span class="sb-sub-sep">·</span>运行 {{s.uptimeText || '—'}}</div>
       </div>
 
+      {{if pro || simpleStyle === 'bars'}}
       <div class="sb-section">
         <div class="sb-split">
           <div class="sb-gauge">
             <div class="sb-gauge-head">
-              <span class="sb-label">CPU{{if s.cpuModel}}<span class="sb-label-sub">{{s.cpuModel}}</span>{{/if}}</span>
+              <span class="sb-label">CPU</span>
               <span class="sb-gauge-value" {{if s.cpuPct != null}}style="color: {{s.cpuColor || '#98a0b3'}};"{{/if}}>{{s.cpuPct == null ? '—' : s.cpuPct.toFixed(1) + '%'}}</span>
             </div>
+            {{if s.cpuModel}}<div class="sb-label-sub">{{s.cpuModel}}</div>{{/if}}
             {{if s.cpuPct != null}}<div class="sb-bar"><i style="width: {{s.cpuPct}}%; background-color: {{s.cpuColor || '#98a0b3'}};"></i></div>{{/if}}
             {{if s.cpuText}}<div class="sb-note">{{s.cpuText}}</div>{{/if}}
           </div>
@@ -82,6 +84,92 @@
           {{/if}}
         {{/if}}
       </div>
+      {{else}}
+      <div class="sb-section">
+        <div class="sb-meters sb-meters-{{simpleStyle}}">
+          {{if simpleStyle === 'rings'}}
+          <div class="sb-meter">
+            <svg viewBox="0 0 120 120" class="sb-ring">
+              <circle class="sb-ring-track" cx="60" cy="60" r="52"></circle>
+              <circle class="sb-ring-value" cx="60" cy="60" r="52" style="stroke: {{s.cpuColor || '#98a0b3'}}; stroke-dasharray: {{(s.cpuPct || 0) * 3.2673}} 326.73;"></circle>
+              <text class="sb-ring-text" x="60" y="68">{{s.cpuPct == null ? '—' : s.cpuPct.toFixed(1) + '%'}}</text>
+            </svg>
+            <div class="sb-meter-label">CPU</div>
+            <div class="sb-meter-sub">{{s.cpuModel || '—'}}</div>
+          </div>
+          <div class="sb-meter">
+            <svg viewBox="0 0 120 120" class="sb-ring">
+              <circle class="sb-ring-track" cx="60" cy="60" r="52"></circle>
+              <circle class="sb-ring-value" cx="60" cy="60" r="52" style="stroke: {{s.memColor || '#98a0b3'}}; stroke-dasharray: {{(s.memPct || 0) * 3.2673}} 326.73;"></circle>
+              <text class="sb-ring-text" x="60" y="68">{{s.memPct == null ? '—' : s.memPct.toFixed(1) + '%'}}</text>
+            </svg>
+            <div class="sb-meter-label">内存</div>
+            <div class="sb-meter-sub">{{s.memText || '—'}}</div>
+          </div>
+          <div class="sb-meter">
+            <svg viewBox="0 0 120 120" class="sb-ring">
+              <circle class="sb-ring-track" cx="60" cy="60" r="52"></circle>
+              <circle class="sb-ring-value" cx="60" cy="60" r="52" style="stroke: {{s.diskSummary && s.diskSummary.color || '#98a0b3'}}; stroke-dasharray: {{((s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct : 0)) * 3.2673}} 326.73;"></circle>
+              <text class="sb-ring-text" x="60" y="68">{{s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct.toFixed(1) + '%' : '—'}}</text>
+            </svg>
+            <div class="sb-meter-label">磁盘</div>
+            <div class="sb-meter-sub">{{s.diskSummary && s.diskSummary.count ? s.diskSummary.count + ' 个挂载点' : '—'}}</div>
+          </div>
+          {{/if}}
+
+          {{if simpleStyle === 'arcs'}}
+          <div class="sb-meter">
+            <svg viewBox="0 0 140 84" class="sb-arc">
+              <path class="sb-arc-track" d="M 12 72 A 58 58 0 0 1 128 72"></path>
+              <path class="sb-arc-value" d="M 12 72 A 58 58 0 0 1 128 72" style="stroke: {{s.cpuColor || '#98a0b3'}}; stroke-dasharray: {{(s.cpuPct || 0) * 1.8221}} 182.21;"></path>
+            </svg>
+            <div class="sb-meter-value" style="color: {{s.cpuColor || '#98a0b3'}};">{{s.cpuPct == null ? '—' : s.cpuPct.toFixed(1) + '%'}}</div>
+            <div class="sb-meter-label">CPU</div>
+            <div class="sb-meter-sub">{{s.cpuModel || '—'}}</div>
+          </div>
+          <div class="sb-meter">
+            <svg viewBox="0 0 140 84" class="sb-arc">
+              <path class="sb-arc-track" d="M 12 72 A 58 58 0 0 1 128 72"></path>
+              <path class="sb-arc-value" d="M 12 72 A 58 58 0 0 1 128 72" style="stroke: {{s.memColor || '#98a0b3'}}; stroke-dasharray: {{(s.memPct || 0) * 1.8221}} 182.21;"></path>
+            </svg>
+            <div class="sb-meter-value" style="color: {{s.memColor || '#98a0b3'}};">{{s.memPct == null ? '—' : s.memPct.toFixed(1) + '%'}}</div>
+            <div class="sb-meter-label">内存</div>
+            <div class="sb-meter-sub">{{s.memText || '—'}}</div>
+          </div>
+          <div class="sb-meter">
+            <svg viewBox="0 0 140 84" class="sb-arc">
+              <path class="sb-arc-track" d="M 12 72 A 58 58 0 0 1 128 72"></path>
+              <path class="sb-arc-value" d="M 12 72 A 58 58 0 0 1 128 72" style="stroke: {{s.diskSummary && s.diskSummary.color || '#98a0b3'}}; stroke-dasharray: {{((s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct : 0)) * 1.8221}} 182.21;"></path>
+            </svg>
+            <div class="sb-meter-value" style="color: {{s.diskSummary && s.diskSummary.color || '#98a0b3'}};">{{s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct.toFixed(1) + '%' : '—'}}</div>
+            <div class="sb-meter-label">磁盘</div>
+            <div class="sb-meter-sub">{{s.diskSummary && s.diskSummary.count ? s.diskSummary.count + ' 个挂载点' : '—'}}</div>
+          </div>
+          {{/if}}
+
+          {{if simpleStyle === 'tiles'}}
+          <div class="sb-meter sb-meter-tile">
+            <div class="sb-meter-value" style="color: {{s.cpuColor || '#98a0b3'}};">{{s.cpuPct == null ? '—' : s.cpuPct.toFixed(1) + '%'}}</div>
+            <div class="sb-meter-label">CPU</div>
+            <div class="sb-bar sb-bar-xs"><i style="width: {{s.cpuPct || 0}}%; background-color: {{s.cpuColor || '#98a0b3'}};"></i></div>
+            <div class="sb-meter-sub">{{s.cpuModel || '—'}}</div>
+          </div>
+          <div class="sb-meter sb-meter-tile">
+            <div class="sb-meter-value" style="color: {{s.memColor || '#98a0b3'}};">{{s.memPct == null ? '—' : s.memPct.toFixed(1) + '%'}}</div>
+            <div class="sb-meter-label">内存</div>
+            <div class="sb-bar sb-bar-xs"><i style="width: {{s.memPct || 0}}%; background-color: {{s.memColor || '#98a0b3'}};"></i></div>
+            <div class="sb-meter-sub">{{s.memText || '—'}}</div>
+          </div>
+          <div class="sb-meter sb-meter-tile">
+            <div class="sb-meter-value" style="color: {{s.diskSummary && s.diskSummary.color || '#98a0b3'}};">{{s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct.toFixed(1) + '%' : '—'}}</div>
+            <div class="sb-meter-label">磁盘</div>
+            <div class="sb-bar sb-bar-xs"><i style="width: {{s.diskSummary && s.diskSummary.hasPct ? s.diskSummary.pct : 0}}%; background-color: {{s.diskSummary && s.diskSummary.color || '#98a0b3'}};"></i></div>
+            <div class="sb-meter-sub">{{s.diskSummary && s.diskSummary.text || '—'}}</div>
+          </div>
+          {{/if}}
+        </div>
+      </div>
+      {{/if}}
 
       <div class="sb-section">
         <div class="sb-split">

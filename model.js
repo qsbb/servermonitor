@@ -705,6 +705,19 @@ function buildGpuView(snap) {
   }
 }
 
+function shortenCpuModel(name) {
+  const text = String(name || "").trim()
+  if (!text) return ""
+  return text
+    .replace(/\((r|tm)\)/gi, "")
+    .replace(/[®™]/g, "")
+    .replace(/\bCPU\b/gi, " ")
+    .replace(/\bProcessor\b/gi, " ")
+    .replace(/\s*@\s*[\d.]+\s*GHz\s*$/i, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+}
+
 export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000, options = {}) {
   const snap = record?.snap ?? null
   const state = computeState(record, timeoutMs, now)
@@ -837,7 +850,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000,
     uptimeText,
     dataAgeText,
     lastSeenText,
-    cpuModel: snap?.cpu?.model || "未知 CPU",
+    cpuModel: shortenCpuModel(snap?.cpu?.model) || "未知 CPU",
     cpuPct: cpuUsage,
     cpuColor: cpuUsage === null ? "#98a0b3" : severityColor(cpuUsage),
     cpuText,
@@ -925,6 +938,7 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
     pageCount,
     detail: false,
     pro,
+    simpleStyle: pro ? "pro" : (config.simple_style || "bars"),
     updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
     pageSize: config.page_size,
     imgType: config.render?.imgType || "png",

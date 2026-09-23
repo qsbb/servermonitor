@@ -123,17 +123,112 @@
   gap: 12px;
 }
 
-/* ---------- PRO：全部机器横向排列，按卡片内容从长到短 ---------- */
+/* ---------- 简洁视图：仪表盘样式（rings / arcs / tiles） ---------- */
+.sb-meters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  text-align: center;
+}
+
+.sb-meter {
+  min-width: 0;
+}
+
+.sb-ring {
+  display: block;
+  width: 100%;
+  max-width: 96px;
+  height: auto;
+  margin: 0 auto;
+}
+
+.sb-ring-track {
+  fill: none;
+  stroke: rgba(148, 163, 184, 0.16);
+  stroke-width: 11;
+}
+
+.sb-ring-value {
+  fill: none;
+  stroke-width: 11;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 60px 60px;
+}
+
+.sb-ring-text {
+  fill: var(--text-strong);
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-arc {
+  display: block;
+  width: 100%;
+  max-width: 128px;
+  height: auto;
+  margin: 0 auto;
+}
+
+.sb-arc-track {
+  fill: none;
+  stroke: rgba(148, 163, 184, 0.16);
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+
+.sb-arc-value {
+  fill: none;
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+
+.sb-meter-value {
+  font-family: var(--mono);
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-meter-label {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.sb-meter-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.sb-meter-tile .sb-bar {
+  margin: 7px 0 6px;
+}
+
+/* ---------- PRO：容器按内容撑宽，所有机器一行横排（从长到短） ---------- */
+#container.is-pro {
+  width: max-content;
+  min-width: 720px;
+}
+
 .sb-list.sb-pro {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: flex-start;
   gap: 12px;
 }
 
 .sb-list.sb-pro .sb-card {
-  flex: 0 0 330px;
-  width: 330px;
+  flex: 0 0 320px;
+  width: 320px;
 }
 
 .sb-card {
@@ -201,10 +296,6 @@
 
 .sb-list.sb-cols-2 .sb-gauge-value {
   font-size: 17px;
-}
-
-.sb-list.sb-cols-2 .sb-label-sub {
-  max-width: 108px;
 }
 
 .sb-list.sb-cols-2 .sb-split {
@@ -326,15 +417,19 @@
 }
 
 .sb-label-sub {
-  max-width: 180px;
-  margin-left: 2px;
+  max-width: none;
+  margin: 3px 0 7px;
+  font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
   text-transform: none;
   color: var(--text-faint);
-  white-space: nowrap;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .sb-sec-tag {
