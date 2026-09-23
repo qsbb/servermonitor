@@ -3,14 +3,14 @@
   <div class="sb-topbar">
     <div class="sb-topbar-main">
       <div class="sb-overline">SERVER MONITOR</div>
-      <div class="sb-title">{{if detail}}服务器状态 · 详情{{else}}服务器状态 · 总览{{/if}}</div>
+      <div class="sb-title">{{if pro}}服务器状态 · PRO{{else}}{{if detail}}服务器状态 · 详情{{else}}服务器状态 · 总览{{/if}}{{/if}}</div>
       {{if summary}}<div class="sb-summary">{{summary}}</div>{{/if}}
     </div>
     {{if pageCount && pageCount > 1}}<div class="sb-pagechip">第 {{pageNum || 1}} / {{pageCount}} 页</div>{{/if}}
   </div>
 
   {{if servers && servers.length}}
-  <div class="sb-list {{layout && layout.cols === 2 ? 'sb-cols-2' : 'sb-cols-1'}}">
+  <div class="sb-list {{layout && layout.mode === 'pro' ? 'sb-pro' : (layout && layout.cols === 2 ? 'sb-cols-2' : 'sb-cols-1')}}">
     {{each servers s}}
     <div class="sb-card {{s.state !== 'online' ? 'is-offline' : ''}}{{s.hasSnap ? '' : ' is-nosnap'}}" style="--accent: {{s.borderColor || '#22d3ee'}};">
       <i class="sb-rail"></i>
@@ -49,22 +49,37 @@
       <div class="sb-section">
         <div class="sb-sec-head">
           <span class="sb-label">磁盘</span>
-          {{if s.disks && s.disks.length}}<span class="sb-sec-tag">{{s.disks.length}} 个挂载点</span>{{/if}}
+          {{if s.diskSummary && s.diskSummary.count}}<span class="sb-sec-tag">{{s.diskSummary.count}} 个挂载点</span>{{/if}}
         </div>
-        {{if s.disks && s.disks.length}}
-          {{each s.disks d}}
+        {{if pro}}
+          {{if s.disks && s.disks.length}}
+            {{each s.disks d}}
+            <div class="sb-disk">
+              <div class="sb-disk-line">
+                <span class="sb-disk-mount">{{d.mount || '/'}}</span>
+                <span class="sb-disk-pct" style="color: {{d.color || '#98a0b3'}};">{{d.hasPct ? d.pct.toFixed(1) + '%' : '—'}}</span>
+              </div>
+              <div class="sb-bar sb-bar-xs"><i style="width: {{d.hasPct ? d.pct : 0}}%; background-color: {{d.color || '#98a0b3'}};"></i></div>
+              {{if d.text}}<div class="sb-disk-sub">{{d.text}}</div>{{/if}}
+            </div>
+            {{/each}}
+            {{if s.diskOverflow}}<div class="sb-disk-sub">另有 {{s.diskOverflow}} 个挂载点未显示</div>{{/if}}
+          {{else}}
+            <div class="sb-note">{{s.diskText || '—'}}</div>
+          {{/if}}
+        {{else}}
+          {{if s.diskSummary && s.diskSummary.hasPct}}
           <div class="sb-disk">
             <div class="sb-disk-line">
-              <span class="sb-disk-mount">{{d.mount || '/'}}</span>
-              <span class="sb-disk-pct" style="color: {{d.color || '#98a0b3'}};">{{d.hasPct ? d.pct.toFixed(1) + '%' : '—'}}</span>
+              <span class="sb-disk-mount">总占用</span>
+              <span class="sb-disk-pct" style="color: {{s.diskSummary.color}};">{{s.diskSummary.pct.toFixed(1)}}%</span>
             </div>
-            <div class="sb-bar sb-bar-xs"><i style="width: {{d.hasPct ? d.pct : 0}}%; background-color: {{d.color || '#98a0b3'}};"></i></div>
-            {{if d.text}}<div class="sb-disk-sub">{{d.text}}</div>{{/if}}
+            <div class="sb-bar sb-bar-xs"><i style="width: {{s.diskSummary.pct}}%; background-color: {{s.diskSummary.color}};"></i></div>
+            {{if s.diskSummary.text}}<div class="sb-disk-sub">{{s.diskSummary.text}}</div>{{/if}}
           </div>
-          {{/each}}
-          {{if s.diskOverflow}}<div class="sb-disk-sub">另有 {{s.diskOverflow}} 个挂载点未显示</div>{{/if}}
-        {{else}}
-          <div class="sb-note">{{s.diskText || '—'}}</div>
+          {{else}}
+            <div class="sb-note">{{s.diskText || '—'}}</div>
+          {{/if}}
         {{/if}}
       </div>
 
@@ -88,7 +103,7 @@
         </div>
       </div>
 
-      {{if s.hasGpu && s.gpus && s.gpus.length}}
+      {{if pro && s.hasGpu && s.gpus && s.gpus.length}}
       <div class="sb-section">
         <div class="sb-sec-head">
           <span class="sb-label">GPU</span>

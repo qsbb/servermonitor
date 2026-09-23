@@ -123,6 +123,19 @@
   gap: 12px;
 }
 
+/* ---------- PRO：全部机器横向排列，按卡片内容从长到短 ---------- */
+.sb-list.sb-pro {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sb-list.sb-pro .sb-card {
+  flex: 0 0 330px;
+  width: 330px;
+}
+
 .sb-card {
   position: relative;
   border-radius: var(--r-lg);

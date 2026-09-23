@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { decorateEntry, shouldShowLocalEntry } from "../model.js"
+import { decorateEntry, shouldShowLocalEntry, sortEntriesByCardLength } from "../model.js"
 
 function makeRecord(net) {
   return {
@@ -67,4 +67,45 @@ test("hostname is never used to guess the local machine", () => {
   // 两台不同机器同名、容器里报宿主主机名……这些都不该影响卡片
   const config = { include_local: true, servers: [{ name: "4c4g" }] }
   assert.equal(shouldShowLocalEntry(config), true)
+})
+
+test("normal view summarises disks while pro view keeps the details", () => {
+  const record = makeRecord({ iface: "eth0", rxSec: 1, txSec: 1, rxTotal: 1, txTotal: 1 })
+  record.snap.disks = [
+    { mount: "/", used: 10, total: 100 },
+    { mount: "/data", used: 50, total: 100 },
+  ]
+  const normal = decorateEntry({ name: "web-01" }, record, 1_000, 30_000)
+  assert.equal(normal.pro, false)
+  assert.equal(normal.diskSummary.hasPct, true)
+  assert.equal(normal.diskSummary.pct, 30)
+  assert.equal(normal.diskSummary.count, 2)
+  assert.equal(normal.diskSummary.text, "60.0GB / 200.0GB")
+
+  const pro = decorateEntry({ name: "web-01" }, record, 1_000, 30_000, { pro: true })
+  assert.equal(pro.pro, true)
+  assert.equal(pro.disks.length, 2)
+  assert.equal(pro.diskSummary.pct, 30)
+})
+
+test("disk summary ignores mounts without a usable total", () => {
+  const record = makeRecord(null)
+  record.snap.disks = [
+    { mount: "/", used: 10, total: 100 },
+    { mount: "/broken", used: 5, total: 0 },
+    { mount: "/unknown", used: null, total: 100 },
+  ]
+  const entry = decorateEntry({ name: "web-01" }, record, 1_000, 30_000)
+  assert.equal(entry.diskSummary.count, 1)
+  assert.equal(entry.diskSummary.pct, 10)
+})
+
+test("pro layout sorts cards from the longest to the shortest", () => {
+  const short = { name: "b-short", cardRows: 10 }
+  const long = { name: "a-long", cardRows: 24 }
+  const mid = { name: "c-mid", cardRows: 16 }
+  assert.deepEqual(
+    sortEntriesByCardLength([short, long, mid]).map(i => i.name),
+    ["a-long", "c-mid", "b-short"],
+  )
 })

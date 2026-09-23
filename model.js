@@ -705,7 +705,7 @@ function buildGpuView(snap) {
   }
 }
 
-export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000) {
+export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000, options = {}) {
   const snap = record?.snap ?? null
   const state = computeState(record, timeoutMs, now)
   const severity = computeSeverity(record, timeoutMs, now)
@@ -781,6 +781,29 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
         .slice(0, 8)
     : []
   const gpuView = snap ? buildGpuView(snap) : { hasGpu: false, gpuEmptyText: "—", gpus: [] }
+
+  // 普通视图只展示磁盘总占用，pro 视图才展开每个挂载点
+  let sumUsed = 0
+  let sumTotal = 0
+  let sumCount = 0
+  for (const d of allDisks) {
+    const used = numOrNull(d?.used)
+    const total = numOrNull(d?.total)
+    if (used === null || total === null || total <= 0) continue
+    sumUsed += used
+    sumTotal += total
+    sumCount += 1
+  }
+  const diskPct = computeUsagePercent(sumUsed, sumTotal)
+  const diskSummary = {
+    count: sumCount,
+    pct: diskPct ?? 0,
+    hasPct: diskPct !== null,
+    color: severityColor(diskPct ?? 0),
+    text: sumCount ? `${formatSizeGB(sumUsed)} / ${formatSizeGB(sumTotal)}` : "—",
+  }
+  // 粗略的卡片高度（行数），pro 视图按它从长到短排列
+  const cardRows = 10 + diskView.length * 2 + (gpuView.gpus?.length || 0) * 2
   const osText = snap
     ? `${snap.os?.distro || snap.os?.platform || "未知系统"} · ${snap.os?.release || snap.os?.arch || ""}`.trim()
     : "—"
@@ -827,6 +850,9 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
     memColor: severityColor(memPct ?? 0),
     diskText,
     disks: diskView,
+    diskSummary,
+    cardRows,
+    pro: Boolean(options?.pro),
     diskOverflow,
     netText,
     netLines,
@@ -851,12 +877,12 @@ export function shouldShowLocalEntry(config) {
   return true
 }
 
-export async function getEntries() {
+export async function getEntries(options = {}) {
   await bootstrap()
   const config = await refreshConfig()
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
-  const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
+  const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs, options))
   if (!shouldShowLocalEntry(config)) return registered
   const local = [await buildLocalEntry(timeoutMs, now)]
   return [...local, ...registered]
@@ -872,7 +898,7 @@ export async function getEntryByName(name) {
   return decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs)
 }
 
-export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEntries = null, config = null) {
+export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEntries = null, config = null, options = {}) {
   await bootstrap()
   if (!config) config = await refreshConfig()
   const list = Array.isArray(entries) ? entries : []
@@ -891,19 +917,23 @@ export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEn
 
   const totalEntries = Array.isArray(allEntries) && allEntries.length ? allEntries.length : list.length
   const useGrid = totalEntries >= 4
+  const pro = Boolean(options?.pro)
   return {
     summary,
     servers: list,
     pageNum,
     pageCount,
     detail: false,
+    pro,
     updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
     pageSize: config.page_size,
     imgType: config.render?.imgType || "png",
-    layout: {
-      cols: useGrid ? 2 : 1,
-      mode: useGrid ? "grid" : "stack",
-    },
+    layout: pro
+      ? { cols: Math.max(1, list.length), mode: "pro" }
+      : {
+          cols: useGrid ? 2 : 1,
+          mode: useGrid ? "grid" : "stack",
+        },
   }
 }
 
@@ -1363,6 +1393,12 @@ export async function buildServerCommand(name, { configuredUrl = "" } = {}) {
     ? "当前上报地址是回环地址，远程 agent 无法访问；请重新添加并填写公网/内网地址。"
     : ""
   return { name: conf.name, token: conf.token, reportUrl, command, warning, config }
+}
+
+export function sortEntriesByCardLength(entries) {
+  return [...(Array.isArray(entries) ? entries : [])]
+    .sort((a, b) => (Number(b?.cardRows) || 0) - (Number(a?.cardRows) || 0)
+      || String(a?.name || "").localeCompare(String(b?.name || ""), "zh-CN"))
 }
 
 export function sortEntries(entries) {

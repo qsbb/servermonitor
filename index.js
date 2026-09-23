@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import { CONFIG_FILE, DATA_DIR, ROOT_DIR, getReportUrlPath, loadConfig } from "./config.js"
 import {
   getEntries,
+  sortEntriesByCardLength,
   getEntryByName,
   sortEntries,
   buildStatusData,
@@ -98,6 +99,7 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态改名\\s+\\S+$", fnc: "usage", permission: "master", log: false },
         { reg: "^#?服务器状态命令$", fnc: "usage", permission: "master", log: false },
         { reg: "^#?服务器状态删除$", fnc: "usage", permission: "master", log: false },
+        { reg: "^#?服务器状态\\s*pro$", fnc: "statusPro", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
       ],
@@ -124,9 +126,19 @@ export class servermonitor extends plugin {
   }
 
   async statusAll() {
+    return this._statusOverview(false)
+  }
+
+  async statusPro() {
+    return this._statusOverview(true)
+  }
+
+  async _statusOverview(pro) {
     if (!(await this._canViewStatus())) return this._replyNoPermission()
     const config = await loadConfig()
-    const entries = sortEntries(await getEntries())
+    const entries = pro
+      ? sortEntriesByCardLength(await getEntries({ pro: true }))
+      : sortEntries(await getEntries())
     if (!entries.length) return this.reply("尚未添加服务器，请先执行 #服务器状态添加 <名称>")
 
     const pageSize = Math.max(1, Number(config.page_size) || 8)
@@ -137,11 +149,11 @@ export class servermonitor extends plugin {
     if (this.e?.runtime?.render) {
       for (const [idx, pageEntries] of pages.entries()) {
         try {
-          const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries, config)
+          const data = await buildStatusData(pageEntries, idx + 1, pages.length, entries, config, { pro })
           const seg = await this.e.runtime.render(PLUGIN_NAME, "server_status", data, {
             retType: "base64",
             imgType: config.render?.imgType || "png",
-            saveId: `servermonitor_status_p${idx + 1}_of_${pages.length}`,
+            saveId: `servermonitor_status${pro ? "_pro" : ""}_p${idx + 1}_of_${pages.length}`,
           })
           if (seg) segs.push(seg)
           else ;(globalThis.logger || console).warn(`[servermonitor] page ${idx + 1} rendered empty`)
