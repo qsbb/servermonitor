@@ -840,15 +840,25 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000)
   }
 }
 
+export function shouldShowLocalEntry(config) {
+  if (!config?.include_local) return false
+  const servers = Array.isArray(config.servers) ? config.servers : []
+  if (servers.some(conf => isLocalName(conf.name))) return false
+  // Yunzai 和 agent 跑在同一台机器时，“本机”卡片会和那台机器的 agent 卡片重复。
+  // 不做任何自动猜测（主机名、内网 IP 都可能重名或被容器改写），由配置显式声明。
+  const declared = String(config.local_server_name || "").trim()
+  if (declared) return !servers.some(conf => String(conf.name) === declared)
+  return true
+}
+
 export async function getEntries() {
   await bootstrap()
   const config = await refreshConfig()
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
   const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
-  if (!config.include_local) return registered
-  const hasLocalRegistered = config.servers.some(conf => isLocalName(conf.name))
-  const local = hasLocalRegistered ? [] : [await buildLocalEntry(timeoutMs, now)]
+  if (!shouldShowLocalEntry(config)) return registered
+  const local = [await buildLocalEntry(timeoutMs, now)]
   return [...local, ...registered]
 }
 

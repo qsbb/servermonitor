@@ -143,6 +143,16 @@ async function collectGpuNvidiaSmi() {
   })
 }
 
+const VIRTUAL_GPU_NAME_RE = /(virtual|virtio|vmware|virtualbox|hyper-v|microsoft basic|gameviewer|mumu|meta virtual|zako|sunshine|parsec|displaylink|usb display|cirrus|qxl|bochs|qemu|standard vga)/i
+const REAL_GPU_VENDOR_RE = /(nvidia|amd|radeon|intel|arc)/i
+
+export function isVirtualGpuName(name) {
+  const text = String(name || "").trim()
+  if (!text) return false
+  if (REAL_GPU_VENDOR_RE.test(text)) return false
+  return VIRTUAL_GPU_NAME_RE.test(text)
+}
+
 async function collectGpuModelFallback() {
   if (process.platform === "linux") {
     const result = await safe(() => execFileAsync("lspci", ["-mm"], { timeout: 5000 }), null)
@@ -157,6 +167,7 @@ async function collectGpuModelFallback() {
         return fields[2] || fields[1] || fields[0] || null
       })
       .filter(Boolean)
+      .filter(model => !isVirtualGpuName(model))
     return models.map(model => ({
       model,
       usage: null,

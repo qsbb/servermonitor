@@ -20,6 +20,7 @@ const DEFAULT_CONFIG = {
   offline_timeout: 30,
   public_status: false,
   include_local: true,
+  local_server_name: "",
   alert: {
     enabled: true,
     cooldown: 120,
@@ -235,6 +236,7 @@ function stringifyConfig(config) {
   lines.push(`offline_timeout: ${data.offline_timeout}`)
   lines.push(`public_status: ${data.public_status}`)
   lines.push(`include_local: ${data.include_local}`)
+  lines.push(`local_server_name: ${JSON.stringify(String(data.local_server_name || ""))}`)
   lines.push(`report_enabled: ${data.report_enabled}`)
   lines.push("alert:")
   lines.push(`  enabled: ${data.alert.enabled}`)
@@ -287,6 +289,7 @@ export function normalizeConfig(input = {}) {
   base.offline_timeout = Math.max(5, toInt(config.offline_timeout, base.offline_timeout))
   base.public_status = toBool(config.public_status, base.public_status)
   base.include_local = toBool(config.include_local, base.include_local)
+  base.local_server_name = String(config.local_server_name || "").trim()
 
   const alert = config.alert && typeof config.alert === "object" ? config.alert : {}
   base.alert = {

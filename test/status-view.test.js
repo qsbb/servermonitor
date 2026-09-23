@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { decorateEntry } from "../model.js"
+import { decorateEntry, shouldShowLocalEntry } from "../model.js"
 
 function makeRecord(net) {
   return {
@@ -52,4 +52,19 @@ test("network block degrades to one line or none", () => {
   const empty = decorateEntry({ name: "web-01" }, makeRecord(null), 1_000, 30_000)
   assert.deepEqual(empty.netLines, [])
   assert.equal(empty.netText, "无网络数据")
+})
+
+test("the local card is hidden only when explicitly declared", () => {
+  const config = { include_local: true, servers: [{ name: "4c4g" }, { name: "LXYY" }] }
+  assert.equal(shouldShowLocalEntry(config), true)
+  assert.equal(shouldShowLocalEntry({ ...config, local_server_name: "4c4g" }), false)
+  assert.equal(shouldShowLocalEntry({ ...config, local_server_name: "not-registered" }), true)
+  assert.equal(shouldShowLocalEntry({ ...config, include_local: false, local_server_name: "4c4g" }), false)
+  assert.equal(shouldShowLocalEntry({ include_local: true, servers: [{ name: "本机" }] }), false)
+})
+
+test("hostname is never used to guess the local machine", () => {
+  // 两台不同机器同名、容器里报宿主主机名……这些都不该影响卡片
+  const config = { include_local: true, servers: [{ name: "4c4g" }] }
+  assert.equal(shouldShowLocalEntry(config), true)
 })

@@ -172,6 +172,7 @@ trusted_proxies: []   # 仅当使用可信反向代理时填写；默认只信�
 report_enabled: true  # false 时停止接收所有上报
 public_status: false  # true 时任何人发送 #服务器状态 都会响应；false 时仅 master/admins 可查看
 include_local: true   # true 时 #服务器状态 默认包含 Yunzai 本机卡片
+local_server_name: "" # 与某台已注册机器同机时填它的名字，隐藏重复的“本机”卡片
 page_size: 8          # 每张图显示服务器数量
 offline_timeout: 30   # 超过多少秒未上报判定离线
 ```
