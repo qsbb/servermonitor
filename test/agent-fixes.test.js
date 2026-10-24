@@ -268,6 +268,40 @@ test("parseDfOutput ignores malformed rows", { skip }, () => {
   assert.deepEqual(agent.parseDfOutput("header\nbad line\n/dev/sda2 ext4 zero 0 0 0% /"), [])
 })
 
+test("windowsGpuEngineKey normalizes engine instance names to luid_phys keys", { skip }, () => {
+  assert.equal(
+    agent.windowsGpuEngineKey("pid_1234_luid_0x00000000_0x0000C812_phys_0_eng_0_engtype_3D"),
+    "luid_0x00000000_0x0000c812_phys_0",
+  )
+  assert.equal(agent.windowsGpuEngineKey("luid_0x0_0xAB_phys_3"), "luid_0x0_0xab_phys_3")
+  assert.equal(agent.windowsGpuEngineKey(""), null)
+  assert.equal(agent.windowsGpuEngineKey("no luid here"), null)
+  assert.equal(agent.windowsGpuEngineKey(null), null)
+})
+
+test("aggregateWindowsGpuCounters merges engines and memory per adapter", { skip }, () => {
+  const counters = {
+    engines: [
+      { Name: "pid_1_luid_0x0_0xA_phys_0_eng_0_engtype_3D", UtilizationPercentage: 12 },
+      { Name: "pid_2_luid_0x0_0xA_phys_0_eng_1_engtype_Copy", UtilizationPercentage: 45 },
+      { Name: "pid_3_luid_0x0_0xB_phys_1_eng_0_engtype_3D", UtilizationPercentage: 77 },
+      { Name: "junk-instance", UtilizationPercentage: 99 },
+      { Name: "pid_4_luid_0x0_0xA_phys_0_eng_2_engtype_VideoDecode", UtilizationPercentage: "n/a" },
+    ],
+    memory: [
+      { Name: "luid_0x0_0xA_phys_0", DedicatedUsage: 2147483648 },
+      { Name: "luid_0x0_0xB_phys_1", DedicatedUsage: -5 },
+      { Name: "luid_0x0_0xB_phys_1", DedicatedUsage: 1073741824 },
+    ],
+  }
+  const merged = agent.aggregateWindowsGpuCounters(counters)
+  assert.equal(merged.size, 2)
+  assert.deepEqual(merged.get("luid_0x0_0xa_phys_0"), { usage: 45, memBytes: 2147483648 })
+  assert.deepEqual(merged.get("luid_0x0_0xb_phys_1"), { usage: 77, memBytes: 1073741824 })
+  assert.equal(agent.aggregateWindowsGpuCounters(null).size, 0)
+  assert.equal(agent.aggregateWindowsGpuCounters({ engines: null, memory: undefined }).size, 0)
+})
+
 if (process.platform === "linux") {
   test("collectDiskLinuxDf maps explicit paths back to host mountpoints", async () => {
     const rows = await agent.collectDiskLinuxDf(["/"])

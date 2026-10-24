@@ -435,20 +435,40 @@ async function collectGpuFromLspci(timeout = 5000) {
   }
 }
 
-async function collectGpuFallback() {
+export async function collectGpuFallback() {
   if (process.platform === "linux") return await collectGpuFromLspci()
-  const gfx = await safe(() => si.graphics(), null, 5000, "graphics")
+  // Windows 上 WMI 的 Win32_VideoController 没有 Utilization%（systeminformation 也拿不到），
+  // 非 NVIDIA 显卡需要 GPU 性能计数器补占用率 / 专用显存；两者并行取，再按适配器合并。
+  const wantCounters = process.platform === "win32"
+  const [gfx, counters] = await Promise.all([
+    safe(() => si.graphics(), null, 5000, "graphics"),
+    wantCounters
+      ? collectWindowsGpuCounters(COLD_START?.pending ? coldStartBudget(5000) : 5000)
+      : Promise.resolve(null),
+  ])
   const ctrls = filterGpuControllers(gfx?.controllers)
   if (!ctrls.length) return []
   const windowsAdapterRam = process.platform === "win32"
-  return ctrls.map(ctrl => ({
-    model: ctrl.model || ctrl.name || null,
-    usage: clipPercent(ctrl.utilizationGpu ?? ctrl.utilization ?? null),
-    temp: num(ctrl.temperatureGpu ?? ctrl.temperature ?? null),
-    memUsed: normalizeVram(ctrl.memoryUsed ?? ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null, { windowsAdapterRam }),
-    memTotal: normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? ctrl.memoryTotal ?? null, { windowsAdapterRam }),
-    power: num(ctrl.powerDraw ?? ctrl.power ?? null),
-  }))
+  // 实例名里的 LUID/phys 序号和 Win32_VideoController 之间没有可靠的对应关系，
+  // 只有「计数器适配器数 == 控制器数」一一对应时才能回填，多卡机器宁可留空不张冠李戴。
+  const byAdapter = aggregateWindowsGpuCounters(counters)
+  const single = byAdapter.size === 1 && ctrls.length === 1 ? [...byAdapter.values()][0] : null
+  return ctrls.map(ctrl => {
+    const memTotal = normalizeVram(ctrl.vram ?? ctrl.vramTotal ?? ctrl.memoryTotal ?? null, { windowsAdapterRam })
+    const memUsedSi = normalizeVram(ctrl.memoryUsed ?? ctrl.vramUsed ?? ctrl.vramMemoryUsed ?? null, { windowsAdapterRam })
+    return {
+      model: ctrl.model || ctrl.name || null,
+      usage: clipPercent(ctrl.utilizationGpu ?? ctrl.utilization ?? null) ?? single?.usage ?? null,
+      temp: num(ctrl.temperatureGpu ?? ctrl.temperature ?? null),
+      // si 的 memoryUsed 常来自 AdapterRAM（UInt32 截断，>=4GiB 已判 null）；
+      // 计数器 DedicatedUsage 是字节，比 si 可靠，仅在一一对应时采用。
+      memUsed: single?.memBytes !== undefined && single?.memBytes !== null
+        ? +(single.memBytes / 1024 ** 3).toFixed(1)
+        : memUsedSi,
+      memTotal,
+      power: num(ctrl.powerDraw ?? ctrl.power ?? null),
+    }
+  })
 }
 
 async function readLinuxCpuTempFromSysfs() {
@@ -594,6 +614,93 @@ async function collectWindowsMemAvailableBytes(timeout = 8000) {
     const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout, windowsHide: true })
     const mib = parseWindowsAvailableMBytes(stdout)
     return mib === null ? null : mib * 1024 * 1024
+  } catch {
+    return null
+  }
+}
+
+// 把 GPUEngine 实例名（pid_x_luid_0x..._0x..._phys_0_eng_0_engtype_3D）规整成
+// 稳定的「luid_phys」键，跨快照聚合进程维度，避免按 pid 抖动。解析失败返回 null。
+export function windowsGpuEngineKey(name) {
+  const match = String(name || "").match(/luid_0x([0-9a-f]+)_0x([0-9a-f]+)_phys_(\d+)/i)
+  if (!match) return null
+  return `luid_0x${match[1].toLowerCase()}_0x${match[2].toLowerCase()}_phys_${match[3]}`
+}
+
+export function pickBestGpuEngineRow(rows = []) {
+  let best = null
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const usage = clipPercent(row?.UtilizationPercentage)
+    if (usage === null) continue
+    // 引擎维度（engtype_3D / Copy / VideoDecode…）是分片计数，直接相加会超 100%，
+    // 这里按 phys 取最大值代表该适配器的整体占用率。
+    if (!best || usage > best) best = usage
+  }
+  return best
+}
+
+export function pickBestGpuMemoryRow(rows = []) {
+  let best = null
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const value = num(row?.DedicatedUsage)
+    if (value === null || value < 0) continue
+    if (!best || value > best) best = value
+  }
+  return best
+}
+
+// 把 GPU 引擎 / 显存计数器按适配器（luid_phys）聚合：
+// 占用率取该适配器所有引擎的最大值，专用显存取最大值。
+export function aggregateWindowsGpuCounters(counters) {
+  const result = new Map()
+  const upsert = (key, field, value, better) => {
+    const prev = result.get(key) || {}
+    if (prev[field] === undefined || prev[field] === null || better(value, prev[field])) prev[field] = value
+    result.set(key, prev)
+  }
+  for (const row of Array.isArray(counters?.engines) ? counters.engines : []) {
+    const key = windowsGpuEngineKey(row?.Name)
+    const usage = clipPercent(row?.UtilizationPercentage)
+    if (!key || usage === null) continue
+    upsert(key, "usage", usage, (a, b) => a > b)
+  }
+  for (const row of Array.isArray(counters?.memory) ? counters.memory : []) {
+    const key = windowsGpuEngineKey(row?.Name)
+    const value = num(row?.DedicatedUsage)
+    if (!key || value === null || value < 0) continue
+    upsert(key, "memBytes", value, (a, b) => a > b)
+  }
+  return result
+}
+
+// Windows 非 NVIDIA 显卡（AMD / Intel）没有 nvidia-smi，WMI 的 Win32_VideoController
+// 也不提供占用率；GPU 性能计数器（Win32_PerfFormattedData_GPUPerformanceCounters_*)
+// 是系统级唯一通用来源。全部防御式：类缺失 / 无实例 / 异常都返回 null，不伪造数据。
+export async function collectWindowsGpuCounters(timeout = 5000) {
+  if (process.platform !== "win32") return null
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$engines = $null",
+    "$mem = $null",
+    "try { $engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop } catch {}",
+    "try { $mem = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory -ErrorAction Stop } catch {}",
+    "if ($null -eq $engines -and $null -eq $mem) { exit 0 }",
+    "$engines | ForEach-Object { \"E`t{0}`t{1}\" -f $_.Name, $_.UtilizationPercentage }",
+    "$mem | ForEach-Object { \"M`t{0}`t{1}\" -f $_.Name, $_.DedicatedUsage }",
+  ].join("; ")
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout, windowsHide: true })
+    const engineRows = []
+    const memoryRows = []
+    for (const line of String(stdout || "").split(/\r?\n/)) {
+      const parts = line.split("\t")
+      if (parts.length < 3) continue
+      const value = num(parts[2]?.trim())
+      if (value === null) continue
+      if (parts[0] === "E") engineRows.push({ Name: parts[1], UtilizationPercentage: value })
+      else if (parts[0] === "M") memoryRows.push({ Name: parts[1], DedicatedUsage: value })
+    }
+    return { engines: engineRows, memory: memoryRows }
   } catch {
     return null
   }
