@@ -232,6 +232,8 @@ async function hydratePending() {
           name: sanitizeServerName(item.name),
           snap: item.snap ?? null,
           lastSeen: Number(item.lastSeen) || Date.now(),
+          firstSeen: Number(item.firstSeen) || Number(item.lastSeen) || Date.now(),
+          ip: String(item.ip || ""),
         })
       }
     }
