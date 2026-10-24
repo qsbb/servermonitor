@@ -67,6 +67,22 @@
 
 这种情况下可以进一步做 Windows 专用扩展，比如接 `Get-Counter` 或厂商 SDK，但目前先保持通用、稳定，不引入额外依赖。
 
+## 6.1 补充（2026-10-25）：非 NVIDIA 显卡接入 GPU 性能计数器
+
+上述预留方向已落地：Windows 10+ 的 GPU 性能计数器（WMI 类
+`Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine` / `..._GPUAdapterMemory`）
+作为 AMD / Intel 等非 NVIDIA 显卡的占用率来源。
+
+工作方式：
+
+- `nvidia-smi` 仍是首选；失败后除 `systeminformation` 外，还会并行读一次 GPU 性能计数器（单次 PowerShell 调用，`Get-CimInstance`，区域设置无关）。
+- 引擎实例（3D / Copy / VideoDecode…）是分片计数，按适配器（实例名中的 `luid_*_phys_*`）取**最大值**作为占用率，不相加；专用显存（`DedicatedUsage`，字节）同样按适配器取最大值。
+- 只有当「计数器适配器数 == 检测到的控制器数」一一对应时才回填数值；多卡机器映射不可靠，宁可留空也不张冠李戴。
+- 计数器类缺失（旧系统 / 组策略关闭 GPU 计数器）、无实例、PowerShell 失败，全部静默回退到原 `systeminformation` 行为，不伪造数据。
+- Windows 冷启动阶段沿用更宽的采集预算。
+
+验证方式：在无 `nvidia-smi` 的 Windows 机器上跑 `node agent.mjs --dry-run`，AMD / Intel 卡应能看到 `gpus[].usage`；禁用 GPU 计数器的机器应与旧版行为一致。
+
 ## 7. 相关文件
 
 - `agent/agent.mjs`
