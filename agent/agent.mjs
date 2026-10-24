@@ -120,8 +120,10 @@ export function isLoopbackReportUrl(value) {
 
 function networkMountKey(item) {
   const type = String(item?.type || "").toLowerCase()
-  if (!/^(cifs|smb3?|nfs4?|afpfs|webdav)$/.test(type)) return null
   const device = String(item?.fs || "")
+  // macOS 的 SMB 在 systeminformation 里可能被误报成 HFS，但 //host/share 设备路径是稳定特征
+  const isNetwork = /^(cifs|smb3?|smbfs|nfs4?|afpfs|webdav)$/.test(type) || device.startsWith("//")
+  if (!isNetwork) return null
   const host = device.startsWith("//") ? `//${device.slice(2).split("/")[0]}` : device.split(":")[0]
   if (!host) return null
   // 同一台服务器上的多个共享如果用量完全一致，说明是同一个后端卷

@@ -302,6 +302,22 @@ test("aggregateWindowsGpuCounters merges engines and memory per adapter", { skip
   assert.equal(agent.aggregateWindowsGpuCounters({ engines: null, memory: undefined }).size, 0)
 })
 
+test("filterDisks collapses same-host NAS shares even when si misreports smbfs as HFS", { skip }, () => {
+  // macOS 上 systeminformation 把 SMB 挂载的 type 报成 HFS，且设备名是 //user@host/share；
+  // 同一 NAS 的多个共享用量一致时必须去重，否则状态图重复渲染同一块盘。
+  const rows = [
+    { fs: "/dev/sda2", mount: "/", type: "APFS", used: 12.7 * 1024 ** 3, size: 228.2 * 1024 ** 3 },
+    { fs: "//lingxi@192.168.5.88/photo", mount: "/Volumes/photo", type: "HFS", used: 1516830720000, size: 3998784225280 },
+    { fs: "//lingxi@192.168.5.88/video-WD40EZRZ", mount: "/Volumes/video-WD40EZRZ", type: "HFS", used: 1516830720000, size: 3998784225280 },
+    { fs: "//lingxi@192.168.5.88/Bot-WD40EZRZ", mount: "/Volumes/Bot-WD40EZRZ", type: "HFS", used: 1516830720000, size: 3998784225280 },
+    { fs: "//lingxi@192.168.5.88/AI", mount: "/Volumes/AI", type: "HFS", used: 385.2 * 1024 ** 3, size: 3725.1 * 1024 ** 3 },
+    { fs: "//user@other-host/share", mount: "/Volumes/other", type: "smbfs", used: 1516830720000, size: 3998784225280 },
+  ]
+  const mounts = agent.filterDisks(rows).map(item => item.mount)
+  // 顺序按填充率降序：/ 置顶，photo 与 other 同为 37.9%，AI 约 10.3%
+  assert.deepEqual(mounts, ["/", "/Volumes/photo", "/Volumes/other", "/Volumes/AI"])
+})
+
 if (process.platform === "linux") {
   test("collectDiskLinuxDf maps explicit paths back to host mountpoints", async () => {
     const rows = await agent.collectDiskLinuxDf(["/"])
