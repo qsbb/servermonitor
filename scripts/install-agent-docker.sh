@@ -186,12 +186,13 @@ clone_repo() {
   echo "[servermonitor-agent] clone failed after $GIT_CLONE_ATTEMPTS attempts" >&2
   return 1
 }
-AUTO_NODE_IMAGE="${AUTO_NODE_IMAGE:-1}"
+AUTO_NODE_IMAGE="${AUTO_NODE_IMAGE:-0}"
 NODE_IMAGE_PROBE_TIMEOUT="${NODE_IMAGE_PROBE_TIMEOUT:-8}"
 NODE_IMAGE_PRE_PULL="${NODE_IMAGE_PRE_PULL:-1}"
 DEFAULT_NODE_IMAGE="node:18-bookworm-slim"
 NODE_IMAGE_CANDIDATES="${NODE_IMAGE_CANDIDATES:-node:18-bookworm-slim,docker.1ms.run/library/node:18-bookworm-slim,docker.m.daocloud.io/library/node:18-bookworm-slim,hub.rat.dev/library/node:18-bookworm-slim}"
 NODE_IMAGE="${NODE_IMAGE:-}"
+OFFICIAL_NODE_IMAGE_PREFIXES="node"
 
 now_ms() {
   local ts
@@ -228,6 +229,7 @@ select_node_image() {
   if [[ "$AUTO_NODE_IMAGE" == "0" || "$AUTO_NODE_IMAGE" == "false" ]]; then
     NODE_IMAGE="$DEFAULT_NODE_IMAGE"
     echo "[servermonitor-agent] auto mirror disabled, using NODE_IMAGE=$NODE_IMAGE"
+    echo "[servermonitor-agent] 官方源拉取失败时，可用 NODE_IMAGE=<镜像> 显式指定，或 AUTO_NODE_IMAGE=1 启用第三方镜像测速（供应链风险自担）"
     return 0
   fi
 
@@ -258,6 +260,14 @@ select_node_image() {
     NODE_IMAGE="$DEFAULT_NODE_IMAGE"
     echo "[servermonitor-agent] all mirror probes failed, fallback NODE_IMAGE=$NODE_IMAGE"
   fi
+  # 第三方镜像没有签名校验，镜像被污染即等于在 host 网络 + /:ro 挂载的容器里执行任意代码
+  if [[ "$NODE_IMAGE" != node* ]]; then
+    echo "[servermonitor-agent] 警告：NODE_IMAGE 来自第三方 registry（$NODE_IMAGE），无完整性校验，供应链风险自担" >&2
+    if [[ "$ALLOW_UNVERIFIED_NODE_IMAGE" != "1" ]]; then
+      echo "[servermonitor-agent] 已中止。确认信任该源后用 ALLOW_UNVERIFIED_NODE_IMAGE=1 重试，或改用官方源 NODE_IMAGE=node:18-bookworm-slim" >&2
+      exit 1
+    fi
+  fi
   echo "[servermonitor-agent] selected NODE_IMAGE=$NODE_IMAGE"
 }
 
@@ -280,9 +290,11 @@ github mirror env:
   ALLOW_UNVERIFIED_MIRROR=1
 
 docker image mirror env:
-  AUTO_NODE_IMAGE=1
+  AUTO_NODE_IMAGE=0
   NODE_IMAGE=node:18-bookworm-slim
   NODE_IMAGE_CANDIDATES=node:18-bookworm-slim,docker.1ms.run/library/node:18-bookworm-slim
+  # 第三方镜像无完整性校验，选中非官方源时需显式放行：
+  ALLOW_UNVERIFIED_NODE_IMAGE=1
 EOF
   exit 1
 fi

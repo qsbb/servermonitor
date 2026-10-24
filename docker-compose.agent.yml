@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     command: ["node", "agent.mjs"]
     network_mode: host
-    pid: host
+    # pid: host 已移除：磁盘采集走 df/statfs，不需要宿主 PID 视图；收窄攻击面
     environment:
       SM_NAME: ${SM_NAME:?set SM_NAME}
       SM_TOKEN: ${SM_TOKEN:?set SM_TOKEN}

@@ -30,6 +30,11 @@ const RATE_MAP_MAX = 10_000
 const RATE_SWEEP_MS = 5 * 60 * 1000
 const PENDING_TOKEN_RE = /^sm_[0-9a-f]{32}$/
 const LOCAL_SNAPSHOT_TTL_MS = 5_000
+// pending 防填充：真实 agent 每 SM_INTERVAL 秒重发，pending 条目永远新鲜；
+// 只有攻击者填充的条目会随时间陈旧。按 IP 限条目数 + 满时回收陈旧条目，
+// 避免公网匿名流量用 100 个随机 token 阻塞正常绑定流程 24 小时。
+const PENDING_STALE_MS = 60 * 60 * 1000
+const MAX_PENDING_PER_IP = 10
 
 let trustedProxyCache = []
 
@@ -248,17 +253,40 @@ async function persistPending() {
   state.pendingPersistAt = Date.now()
 }
 
-async function savePendingReport(token, snap, receivedAt = Date.now()) {
+async function savePendingReport(token, snap, receivedAt = Date.now(), ip = "") {
   const cleanToken = String(token || "").trim()
   const cleanName = sanitizeServerName(snap?.name || snap?.os?.hostname)
   if (!cleanToken || !cleanName) return null
   const prev = state.pendingReports.get(cleanToken)
-  const item = { token: cleanToken, name: cleanName, snap, lastSeen: receivedAt }
+  const item = { token: cleanToken, name: cleanName, snap, lastSeen: receivedAt, firstSeen: prev?.firstSeen || receivedAt, ip: ip || prev?.ip || "" }
   state.pendingReports.set(cleanToken, item)
   state.pendingDirty = true
   const shouldPersist = Date.now() - (state.pendingPersistAt || 0) >= PENDING_WRITE_DEBOUNCE_MS
   if (shouldPersist) await persistPending()
   return item
+}
+
+function countPendingByIp(ip) {
+  if (!ip) return 0
+  let count = 0
+  for (const item of state.pendingReports.values()) {
+    if (item.ip === ip) count++
+  }
+  return count
+}
+
+// 队列满时回收陈旧条目（超过 1 小时没再上报的 token 视为垃圾填充），
+// 回收失败且按 IP 计数已满时拒绝入队。
+function tryEvictStalePending(now = Date.now()) {
+  let evicted = 0
+  for (const [key, item] of state.pendingReports) {
+    if (now - (item.lastSeen || 0) > PENDING_STALE_MS) {
+      state.pendingReports.delete(key)
+      evicted++
+    }
+  }
+  if (evicted) state.pendingDirty = true
+  return evicted
 }
 
 async function bootstrap() {
@@ -1015,7 +1043,7 @@ export async function addServer(name, note = "", reportUrl = "") {
   return config.servers.find(item => item.name === cleanName)
 }
 
-export async function bindServerToken(nameOrToken, token = "", note = "设备侧生成 token", reportUrl = "") {
+export async function bindServerToken(nameOrToken, token = "", note = "设备侧生成 token", reportUrl = "", { confirmName = false } = {}) {
   await bootstrap()
   let cleanName = sanitizeServerName(nameOrToken)
   let cleanToken = String(token || "").trim()
@@ -1028,6 +1056,15 @@ export async function bindServerToken(nameOrToken, token = "", note = "设备侧
     if (already) return { ...already, alreadyBound: true }
     pending = state.pendingReports.get(cleanToken) || null
     if (!pending) throw new Error("未收到该 token 的服务器上报，请先在子服务器启动 agent，或使用 #服务器状态绑定 <名称> <token>")
+    // pending.name 来自被监控端自报（上报接口对公网开放，可能被伪造），
+    // token-only 绑定必须由主人显式确认名称后才采用。
+    if (!confirmName) {
+      throw new Error(
+        `待绑定名称【${pending.name}】来自被监控端自报，可能不准确。`
+        + `确认无误请发送：#服务器状态确认绑定 ${cleanToken} ${pending.name}`
+        + `；或直接指定名称：#服务器状态绑定 <名称> ${cleanToken}`,
+      )
+    }
     cleanName = sanitizeServerName(pending.name)
   } else {
     pending = state.pendingReports.get(cleanToken) || null
@@ -1164,10 +1201,16 @@ export async function handleReport(req, res) {
         return res.status(429).json({ ok: false, msg: "pending rate limit" })
       }
       if (state.pendingReports.size >= MAX_PENDING_ENTRIES && !state.pendingReports.has(token)) {
-        log.warn?.(`[servermonitor] report rejected: pending queue full size=${state.pendingReports.size}`)
-        return res.status(429).json({ ok: false, msg: "pending queue full" })
+        if (!tryEvictStalePending()) {
+          log.warn?.(`[servermonitor] report rejected: pending queue full size=${state.pendingReports.size}`)
+          return res.status(429).json({ ok: false, msg: "pending queue full" })
+        }
       }
-      const pending = await savePendingReport(token, snap, Date.now())
+      if (!state.pendingReports.has(token) && countPendingByIp(ip) >= MAX_PENDING_PER_IP) {
+        log.warn?.(`[servermonitor] report rejected: pending per-ip limit ip=${ip}`)
+        return res.status(429).json({ ok: false, msg: "pending per-ip limit" })
+      }
+      const pending = await savePendingReport(token, snap, Date.now(), ip)
       if (pending) {
         log.info?.(`[servermonitor] report pending saved: name=${pending.name} token=...${tokenTail}`)
         return res.status(202).json({

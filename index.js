@@ -34,6 +34,7 @@ import { initServerMonitorRoutes } from "./server.js"
 const PLUGIN_NAME = "servermonitor"
 const execFileAsync = promisify(execFile)
 const deleteConfirmations = new Map()
+const statusViewCooldown = new Map()
 const DELETE_CONFIRM_TTL = 5 * 60 * 1000
 
 function sortedServers(config) {
@@ -86,6 +87,7 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态命令\\s+(\\S{1,32})$", fnc: "command", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{1,32})\\s+(\\S{8,128})(?:\\s+(.+))?$", fnc: "bind", permission: "master", log: false },
         { reg: "^#?服务器状态绑定\\s+(\\S{8,128})$", fnc: "bind", permission: "master", log: false },
+        { reg: "^#?服务器状态确认绑定\\s+(\\S{8,128})\\s+(\\S{1,32})$", fnc: "confirmBind", permission: "master", log: false },
         { reg: "^#?服务器状态改名\\s+(\\S{1,32})\\s+(\\S{1,32})$", fnc: "rename", permission: "master", log: false },
         { reg: "^#?服务器状态删除\\s+(\\S{1,32})$", fnc: "del", permission: "master", log: false },
         { reg: "^#?删除服务器$", fnc: "deleteByIndex", permission: "master", log: false },
@@ -120,6 +122,22 @@ export class servermonitor extends plugin {
     return (config.admins || []).map(String).includes(String(this.e.user_id))
   }
 
+  // 渲染节流：Chromium 截图开销大（最多 8 页/次），public_status 开启时
+  // 任意群成员可高频触发；按用户做简单冷却，保护渲染队列。
+  _viewCooldownOk(config) {
+    const cooldownMs = Math.max(0, Number(config.status_cooldown ?? 10)) * 1000
+    if (!cooldownMs) return true
+    const userId = String(this.e.user_id || "")
+    const now = Date.now()
+    for (const [key, expireAt] of statusViewCooldown) {
+      if (now > expireAt) statusViewCooldown.delete(key)
+    }
+    const nextAllowedAt = statusViewCooldown.get(userId) || 0
+    if (now < nextAllowedAt) return false
+    statusViewCooldown.set(userId, now + cooldownMs)
+    return true
+  }
+
   async _replyNoPermission() {
     if (this.e.isGroup) return false
     return this.reply("权限不足：仅管理员可用")
@@ -136,6 +154,9 @@ export class servermonitor extends plugin {
   async _statusOverview(pro) {
     if (!(await this._canViewStatus())) return this._replyNoPermission()
     const config = await loadConfig()
+    if (!this._viewCooldownOk(config)) {
+      return this.reply(`查看太频繁，请 ${Math.max(0, Number(config.status_cooldown ?? 10))} 秒后再试`)
+    }
     const entries = pro
       ? sortEntriesByCardLength(await getEntries({ pro: true }))
       : sortEntries(await getEntries())
@@ -172,6 +193,10 @@ export class servermonitor extends plugin {
 
   async statusOne() {
     if (!(await this._canViewStatus())) return this._replyNoPermission()
+    const config = await loadConfig()
+    if (!this._viewCooldownOk(config)) {
+      return this.reply(`查看太频繁，请 ${Math.max(0, Number(config.status_cooldown ?? 10))} 秒后再试`)
+    }
     const text = getMessageText(this.e)
     const args = parseCommandArg(text, /^#?服务器状态\s+(.+)$/)
     const name = args?.[0]?.trim()
@@ -180,7 +205,6 @@ export class servermonitor extends plugin {
     const entry = await getEntryByName(name)
     if (!entry) return this.reply(`未找到服务器：${name}`)
 
-    const config = await loadConfig()
     let seg = null
     try {
       if (this.e?.runtime?.render) {
@@ -234,7 +258,7 @@ export class servermonitor extends plugin {
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态改名 <旧名> <新名>  主人私聊修改名称`,
       `#删除服务器 <名称|序号> 主人删除（无参数列出服务器）`,
-      `#确认删除服务器 <序号>  主人二次确认删除`,
+      `#确认删除服务器 <序号> <名称>  主人二次确认删除（需带名称）`,
       `#服务器状态插件更新    主人更新插件代码`,
       `#服务器状态令牌        共享 token 已停用（迁移说明）`,
     ].join("\n"))
@@ -368,6 +392,28 @@ export class servermonitor extends plugin {
     }
   }
 
+  // token-only 绑定的显式确认入口：采用被监控端自报名称前必须经过这里。
+  async confirmBind() {
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?服务器状态确认绑定\s+(\S{8,128})\s+(\S{1,32})$/)
+    const token = args?.[0]?.trim() || ""
+    const name = args?.[1]?.trim() || ""
+    if (!token || !name) return false
+    if (this.e.isGroup) return this.reply("为保护 token，请私聊我执行绑定命令")
+
+    try {
+      const configuredAddress = normalizeReportUrl(cfg?.server?.url || "http://127.0.0.1:2536")
+      const item = await bindServerToken(name, token, "设备侧生成 token（已确认名称）", configuredAddress)
+      return this.reply([
+        item.alreadyBound ? `token 已绑定服务器【${item.name}】` : `已绑定服务器【${item.name}】`,
+        `token：${item.token}`,
+        `可发送 #服务器状态 查看。`,
+      ].join("\n"))
+    } catch (err) {
+      return this.reply(`绑定失败：${err.message || err}`)
+    }
+  }
+
   async rename() {
     const text = getMessageText(this.e)
     const args = parseCommandArg(text, /^#?服务器状态改名\s+(\S{1,32})\s+(\S{1,32})$/)
@@ -429,13 +475,14 @@ export class servermonitor extends plugin {
 
     return this.reply([
       `即将删除服务器【${item.name}】`,
-      `请在 5 分钟内发送：#确认删除服务器 ${index}`,
+      `请在 5 分钟内发送：#确认删除服务器 ${index} ${item.name}`,
+      `（需带名称确认，防止列表变化后误删）`,
     ].join("\n"))
   }
 
   async confirmDelete() {
     const text = getMessageText(this.e)
-    const args = parseCommandArg(text, /^#?确认删除服务器\s*[+＋]?\s*(\d+)?$/)
+    const args = parseCommandArg(text, /^#?确认删除服务器\s*[+＋]?\s*(\d+)?(?:\s+(\S{1,32}))?$/)
     const userId = String(this.e.user_id || "")
     const pending = deleteConfirmations.get(userId)
 
@@ -445,7 +492,14 @@ export class servermonitor extends plugin {
     }
 
     if (args?.[0] && Number(args[0]) !== pending.index) {
-      return this.reply(`序号不一致，请发送：#确认删除服务器 ${pending.index}`)
+      return this.reply(`序号不一致，请发送：#确认删除服务器 ${pending.index} ${pending.name}`)
+    }
+    // 序号只是提醒；名称必须一致才执行，避免列出与确认之间列表变化导致删错对象
+    if (args?.[1] && args[1] !== pending.name) {
+      return this.reply(`名称不一致（待删除的是【${pending.name}】），如确认请发送：#确认删除服务器 ${pending.index} ${pending.name}`)
+    }
+    if (!args?.[1]) {
+      return this.reply(`为防误删，请带名称确认：#确认删除服务器 ${pending.index} ${pending.name}`)
     }
 
     try {

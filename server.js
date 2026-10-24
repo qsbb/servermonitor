@@ -8,9 +8,21 @@ function ensureArray(target, key) {
   return target[key]
 }
 
+let warnedExpressPending = false
+
+// 插件模块加载即调用（早于任何 task tick）。Bot.express 尚未就绪时提示：
+// 这个窗口内 agent 上报会落到宿主 404 兜底，宿主日志会记录包含 X-SM-Token 的完整 headers。
 function registerOnce() {
   globalThis.__servermonitorReportHandler = handleReport
-  if (!globalThis.Bot?.express) return false
+  if (!globalThis.Bot?.express) {
+    if (!warnedExpressPending) {
+      warnedExpressPending = true
+      const warn = globalThis.logger?.warn || console.warn
+      warn("[servermonitor] Bot.express 尚未就绪，上报路由待注册；窗口内的上报请求会出现在 Yunzai 主日志中（含 token），插件加载完成后恢复静默")
+    }
+    return false
+  }
+  warnedExpressPending = false
   const app = Bot.express
 
   if (!app.__servermonitorRegistered) {

@@ -24,7 +24,7 @@ test("concurrent bootstrap waits for hydration instead of racing it", async () =
     files: { "data/pending.json": JSON.stringify(pending) },
     script: `
 import { bindServerToken, getEntries } from "./model.js"
-const [entries, bind] = await Promise.allSettled([getEntries(), bindServerToken("${token}")])
+const [entries, bind] = await Promise.allSettled([getEntries(), bindServerToken("${token}", "", "", "", { confirmName: true })])
 console.log("__RESULT__" + JSON.stringify({ entries: entries.status, bind: bind.status, error: bind.reason?.message || null }))
 `,
   })
@@ -32,6 +32,36 @@ console.log("__RESULT__" + JSON.stringify({ entries: entries.status, bind: bind.
   assert.equal(result.entries, "fulfilled")
   assert.equal(result.bind, "fulfilled")
   assert.equal(result.error, null)
+})
+
+test("token-only bind requires explicit name confirmation", async () => {
+  const token = `sm_${"9".repeat(32)}`
+  const pending = {
+    v: 1,
+    savedAt: Date.now(),
+    pending: [{ token, name: "self-reported", lastSeen: Date.now(), snap: { v: 1, name: "self-reported" } }],
+  }
+  const { code, result } = await runInTempRepo({
+    files: { "data/pending.json": JSON.stringify(pending) },
+    script: `
+import { bindServerToken } from "./model.js"
+import { loadConfig } from "./config.js"
+const unconfirmed = await bindServerToken("${token}").then(v => ({ ok: true, v }), e => ({ ok: false, msg: e.message }))
+const confirmed = await bindServerToken("${token}", "", "", "", { confirmName: true }).then(v => ({ ok: true, v }), e => ({ ok: false, msg: e.message }))
+const config = await loadConfig(true)
+console.log("__RESULT__" + JSON.stringify({
+  unconfirmedOk: unconfirmed.ok,
+  unconfirmedHint: unconfirmed.msg || "",
+  confirmedName: confirmed.v?.name || null,
+  servers: config.servers.length,
+}))
+`,
+  })
+  assert.equal(code, 0)
+  assert.equal(result.unconfirmedOk, false)
+  assert.match(result.unconfirmedHint, /确认绑定/)
+  assert.equal(result.confirmedName, "self-reported")
+  assert.equal(result.servers, 1)
 })
 
 test("bootstrap failure resets and allows a later retry", async () => {
@@ -68,7 +98,7 @@ test("server cap is enforced inside the serialized write queue", async () => {
     script: `
 import { bindServerToken } from "./model.js"
 import { loadConfig } from "./config.js"
-const results = await Promise.allSettled(${JSON.stringify(pendingItems.map(item => item.token))}.map(token => bindServerToken(token)))
+const results = await Promise.allSettled(${JSON.stringify(pendingItems.map(item => item.token))}.map(token => bindServerToken(token, "", "", "", { confirmName: true })))
 const config = await loadConfig(true)
 console.log("__RESULT__" + JSON.stringify({ fulfilled: results.filter(r => r.status === "fulfilled").length, rejected: results.filter(r => r.status === "rejected").length, servers: config.servers.length }))
 `,

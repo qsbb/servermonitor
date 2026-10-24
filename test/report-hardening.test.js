@@ -137,6 +137,72 @@ console.log("__RESULT__" + JSON.stringify({ statuses }))
   assert.equal(result.statuses[10], 429)
 })
 
+test("pending queue evicts stale entries when full instead of staying blocked", async () => {
+  const staleToken = "sm_" + "0".repeat(32)
+  const existing = Array.from({ length: 100 }, (_, i) => ({
+    token: `sm_${i.toString(16).padStart(32, "0")}`,
+    name: `node-${i}`,
+    lastSeen: Date.now() - 2 * 60 * 60 * 1000, // 2 小时前，超过 1 小时陈旧线
+    snap: { v: 1, name: `node-${i}` },
+  }))
+  const { code, result } = await runInTempRepo({
+    files: { "data/pending.json": JSON.stringify({ v: 1, savedAt: Date.now(), pending: existing }) },
+    script: `
+import fs from "node:fs/promises"
+import { handleReport } from "./model.js"
+${PREAMBLE}
+const newToken = "sm_${"c".repeat(32)}"
+const out = res()
+await handleReport(req({ token: newToken }), out)
+const saved = JSON.parse(await fs.readFile("data/pending.json", "utf8"))
+console.log("__RESULT__" + JSON.stringify({ status: out.statusCode, pending: out.payload.pending || false, size: saved.pending.length, staleKept: saved.pending.some(item => item.token === "${staleToken}"), newKept: saved.pending.some(item => item.token === newToken) }))
+`,
+  })
+  assert.equal(code, 0)
+  assert.equal(result.status, 202)
+  assert.equal(result.pending, true)
+  assert.equal(result.size, 1)
+  assert.equal(result.staleKept, false)
+  assert.equal(result.newKept, true)
+})
+
+test("pending entries from one IP are capped", async () => {
+  const { code, result } = await runInTempRepo({
+    script: `
+import { handleReport, flushPending } from "./model.js"
+${PREAMBLE}
+const statuses = []
+// 每分钟 10 个 token 的限速会先触发，这里用 5 个 token + 已存在的同 IP 条目验证按 IP 计数
+for (let i = 0; i < 5; i++) {
+  const out = res()
+  await handleReport(req({ token: "sm_" + (i + 200).toString(16).padStart(32, "0") }), out)
+  statuses.push(out.statusCode)
+}
+await flushPending()
+console.log("__RESULT__" + JSON.stringify({ statuses }))
+`,
+  })
+  assert.equal(code, 0)
+  assert.equal(result.statuses.filter(code => code === 202).length, 5)
+})
+
+test("pending from a different IP is not blocked by another IP's entries", async () => {
+  const { code, result } = await runInTempRepo({
+    script: `
+import { handleReport } from "./model.js"
+${PREAMBLE}
+const first = res()
+const second = res()
+await handleReport(req({ token: "sm_" + (300).toString(16).padStart(32, "0"), ip: "10.0.0.1" }), first)
+await handleReport(req({ token: "sm_" + (301).toString(16).padStart(32, "0"), ip: "10.0.0.2" }), second)
+console.log("__RESULT__" + JSON.stringify({ first: first.statusCode, second: second.statusCode }))
+`,
+  })
+  assert.equal(code, 0)
+  assert.equal(result.first, 202)
+  assert.equal(result.second, 202)
+})
+
 test("registered independent tokens keep working after hardening", async () => {
   const token = "sm_" + "f".repeat(32)
   const { code, result } = await runInTempRepo({

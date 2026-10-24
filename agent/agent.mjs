@@ -866,7 +866,16 @@ async function loadFileConfig() {
 }
 
 async function saveFileConfig(config) {
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), "utf8")
+  // 配置里含 token：安装器承诺 0600，菜单重写时不能回落到默认权限
+  // （Windows 按父目录 ACL 继承，Linux/macOS 按 umask 通常是 0644）。
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 })
+  if (process.platform !== "win32") {
+    await fs.chmod(CONFIG_FILE, 0o600).catch(() => {})
+  } else {
+    try {
+      await execFileAsync("icacls", [CONFIG_FILE, "/inheritance:r", "/grant:r", "SYSTEM:R", "Administrators:F"], { windowsHide: true })
+    } catch {}
+  }
 }
 
 async function promptLine(rl, question, defaultValue = "") {

@@ -22,6 +22,7 @@ const DEFAULT_CONFIG = {
   include_local: true,
   local_server_name: "",
   simple_style: "bars",
+  status_cooldown: 10,
   alert: {
     enabled: true,
     cooldown: 120,
@@ -239,6 +240,7 @@ function stringifyConfig(config) {
   lines.push(`include_local: ${data.include_local}`)
   lines.push(`local_server_name: ${JSON.stringify(String(data.local_server_name || ""))}`)
   lines.push(`simple_style: ${JSON.stringify(String(data.simple_style || "bars"))}`)
+  lines.push(`status_cooldown: ${data.status_cooldown}`)
   lines.push(`report_enabled: ${data.report_enabled}`)
   lines.push("alert:")
   lines.push(`  enabled: ${data.alert.enabled}`)
@@ -295,6 +297,7 @@ export function normalizeConfig(input = {}) {
   base.simple_style = ["bars", "rings", "arcs", "tiles"].includes(String(config.simple_style || "").trim())
     ? String(config.simple_style).trim()
     : "bars"
+  base.status_cooldown = Math.max(0, toInt(config.status_cooldown, base.status_cooldown))
 
   const alert = config.alert && typeof config.alert === "object" ? config.alert : {}
   base.alert = {
