@@ -6,6 +6,8 @@ page_size: 8
 offline_timeout: 30
 public_status: false
 include_local: true
+local_server_name: ""
+simple_style: "bars"
 alert:
   enabled: true
   cooldown: 120
