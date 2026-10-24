@@ -237,12 +237,45 @@ test("parseHostMounts keeps real filesystems and skips pseudo/duplicates", { ski
   ])
 })
 
-test("collectDiskLinuxDf maps explicit paths back to host mountpoints", { skip }, async () => {
-  const rows = await agent.collectDiskLinuxDf(["/"])
-  assert.ok(Array.isArray(rows) && rows.length >= 1)
-  const root = rows.find(item => item.mount === "/")
-  assert.ok(root && Number.isFinite(root.total) && root.total > 0)
+test("parseDfOutput parses GNU df rows and maps /host back to /", { skip }, () => {
+  const sample = [
+    "Filesystem Type 1024-blocks Used Available Capacity Mounted on",
+    "/dev/sda2 ext4 225983756 108715396 105682484 51% /",
+    "/dev/sda1 vfat 523248 7952 515296 2% /boot/efi",
+    "overlay overlay 225983756 108715396 105682484 51% /host",
+    "/dev/sdb1 ext4 9765632 2048000 7717632 21% /host/mnt/data",
+    "tmpfs tmpfs 1024 0 1024 0% /run", // total>0 但会被 filterDisks 过滤
+    "broken line with few fields",
+  ].join("\n")
+  const rows = agent.parseDfOutput(sample)
+  assert.deepEqual(rows, [
+    { mount: "/", type: "ext4", fs: "/dev/sda2", used: 108715396 * 1024, size: 225983756 * 1024 },
+    { mount: "/boot/efi", type: "vfat", fs: "/dev/sda1", used: 7952 * 1024, size: 523248 * 1024 },
+    { mount: "/", type: "overlay", fs: "overlay", used: 108715396 * 1024, size: 225983756 * 1024 },
+    { mount: "/mnt/data", type: "ext4", fs: "/dev/sdb1", used: 2048000 * 1024, size: 9765632 * 1024 },
+    { mount: "/run", type: "tmpfs", fs: "tmpfs", used: 0, size: 1024 * 1024 },
+  ])
+  // 过滤后：vfat/tmpfs/overlay 属于排除类型；/host 前缀映射回宿主路径；输出换算成 GB 且不带 type/fs
+  assert.deepEqual(agent.filterDisks(rows), [
+    { mount: "/", used: +(108715396 / 2 ** 20).toFixed(1), total: +(225983756 / 2 ** 20).toFixed(1) },
+    { mount: "/mnt/data", used: +(2048000 / 2 ** 20).toFixed(1), total: +(9765632 / 2 ** 20).toFixed(1) },
+  ])
 })
+
+test("parseDfOutput ignores malformed rows", { skip }, () => {
+  assert.deepEqual(agent.parseDfOutput(""), [])
+  assert.deepEqual(agent.parseDfOutput("Filesystem Type 1024-blocks Used Available Capacity Mounted on"), [])
+  assert.deepEqual(agent.parseDfOutput("header\nbad line\n/dev/sda2 ext4 zero 0 0 0% /"), [])
+})
+
+if (process.platform === "linux") {
+  test("collectDiskLinuxDf maps explicit paths back to host mountpoints", async () => {
+    const rows = await agent.collectDiskLinuxDf(["/"])
+    assert.ok(Array.isArray(rows) && rows.length >= 1)
+    const root = rows.find(item => item.mount === "/")
+    assert.ok(root && Number.isFinite(root.total) && root.total > 0)
+  })
+}
 
 test("hostMountPaths selects mappings visible inside the container", { skip }, () => {
   const mounts = [

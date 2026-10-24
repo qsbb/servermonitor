@@ -177,10 +177,9 @@ export function filterDisks(list = []) {
     .slice(0, 8)
 }
 
-export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
-  const args = ["-kPTx", "squashfs"]
-  if (paths.length) args.push("--", ...paths)
-  const { stdout } = await execFileAsync("df", args, { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
+// 解析 GNU df -kPT 的输出（fs type total used avail capacity mount）。
+// 抽成纯函数以便在任意平台上测试，不依赖真实的 GNU df。
+export function parseDfOutput(stdout) {
   const rows = []
   for (const line of String(stdout || "").split(/\r?\n/).slice(1)) {
     const fields = line.trim().split(/\s+/)
@@ -192,7 +191,15 @@ export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
     const mount = rawMount === "/host" ? "/" : rawMount.replace(/^\/host(?=\/)/, "")
     rows.push({ mount, type: fields[1], fs: fields[0], used: usedKb * 1024, size: totalKb * 1024 })
   }
-  return filterDisks(rows)
+  return rows
+}
+
+// 依赖 GNU df（-x 排除类型、-- 结束选项）；macOS/BSD df 不支持，测试时请直接喂 parseDfOutput。
+export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
+  const args = ["-kPTx", "squashfs"]
+  if (paths.length) args.push("--", ...paths)
+  const { stdout } = await execFileAsync("df", args, { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
+  return filterDisks(parseDfOutput(stdout))
 }
 
 const PSEUDO_FS_RE = /^(proc|sysfs|devtmpfs|tmpfs|devpts|cgroup2?|efivarfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|ramfs|nsfs|overlay|squashfs|fuse|fuse\.[\w.]+|rpc_pipefs|selinuxfs)$/i
