@@ -5,7 +5,7 @@ import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
-const MODULE_FILES = ["config.js", "model.js", "local.js"]
+const MODULE_FILES = ["config.js", "alert.js", "model.js", "local.js"]
 
 export function basicConfig(extra = "") {
   return [

@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import crypto from "node:crypto"
 import { fileURLToPath } from "node:url"
+import { normalizeAlertRules } from "./alert.js"
 
 export const PLUGIN_NAME = "servermonitor"
 export const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url))
@@ -27,6 +28,8 @@ const DEFAULT_CONFIG = {
   alert: {
     enabled: true,
     cooldown: 120,
+    quiet_hours: "",
+    rules: [],
   },
   render: {
     imgType: "png",
@@ -114,6 +117,7 @@ function parseConfigText(raw) {
   const parsed = {}
   let section = null
   let currentServer = null
+  let currentRule = null
 
   for (const sourceLine of String(raw || "").split(/\r?\n/)) {
     if (!sourceLine.trim() || sourceLine.trim().startsWith("#")) continue
@@ -122,6 +126,7 @@ function parseConfigText(raw) {
 
     if (indent === 0) {
       currentServer = null
+      currentRule = null
       if (/^trusted_proxies:\s*\[\]\s*$/.test(line)) {
         parsed.trusted_proxies = []
         section = null
@@ -195,7 +200,39 @@ function parseConfigText(raw) {
       continue
     }
 
-    if (section === "alert" || section === "render") {
+    if (section === "alert") {
+      if (/^rules:\s*\[\]\s*$/.test(line)) {
+        parsed.alert.rules = []
+        continue
+      }
+      if (line === "rules:") {
+        parsed.alert.rules = []
+        section = "alert-rules"
+        continue
+      }
+      const pair = parseKeyValue(line)
+      if (pair) parsed.alert[pair[0]] = pair[1]
+      continue
+    }
+
+    if (section === "alert-rules") {
+      if (!Array.isArray(parsed.alert.rules)) parsed.alert.rules = []
+      if (line.startsWith("- ")) {
+        currentRule = {}
+        parsed.alert.rules.push(currentRule)
+        const rest = line.slice(2).trim()
+        const pair = rest ? parseKeyValue(rest) : null
+        if (pair) currentRule[pair[0]] = pair[1]
+        continue
+      }
+      if (currentRule) {
+        const pair = parseKeyValue(line)
+        if (pair) currentRule[pair[0]] = pair[1]
+      }
+      continue
+    }
+
+    if (section === "render") {
       const pair = parseKeyValue(line)
       if (pair) parsed[section][pair[0]] = pair[1]
     }
@@ -247,6 +284,19 @@ function stringifyConfig(config) {
   lines.push("alert:")
   lines.push(`  enabled: ${data.alert.enabled}`)
   lines.push(`  cooldown: ${data.alert.cooldown}`)
+  lines.push(`  quiet_hours: ${yamlString(data.alert.quiet_hours || "")}`)
+  if (data.alert.rules.length) {
+    lines.push("  rules:")
+    for (const rule of data.alert.rules) {
+      lines.push(`    - metric: ${yamlString(rule.metric)}`)
+      lines.push(`      threshold: ${rule.threshold}`)
+      lines.push(`      for: ${rule.for}`)
+      if (rule.cooldown) lines.push(`      cooldown: ${rule.cooldown}`)
+      if (rule.enabled === false) lines.push(`      enabled: false`)
+    }
+  } else {
+    lines.push("  rules: []")
+  }
   lines.push("render:")
   lines.push(`  imgType: ${yamlString(data.render.imgType)}`)
   return `${lines.join("\n")}\n`
@@ -306,6 +356,8 @@ export function normalizeConfig(input = {}) {
   base.alert = {
     enabled: toBool(alert.enabled, base.alert.enabled),
     cooldown: Math.max(30, toInt(alert.cooldown, base.alert.cooldown)),
+    quiet_hours: String(alert.quiet_hours || "").trim(),
+    rules: normalizeAlertRules(alert.rules),
   }
 
   const render = config.render && typeof config.render === "object" ? config.render : {}

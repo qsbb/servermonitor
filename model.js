@@ -4,6 +4,7 @@ import path from "node:path"
 import crypto from "node:crypto"
 import { collectLocalSnapshot } from "./local.js"
 import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
+import { ALERT_METRIC_LABELS, evaluateAlertRules, inQuietHours, parseQuietHours, pruneAlertStates } from "./alert.js"
 
 const STATE_KEY = "__servermonitor_state__"
 const state = globalThis[STATE_KEY] ??= {
@@ -12,6 +13,7 @@ const state = globalThis[STATE_KEY] ??= {
   configIndexByToken: new Map(),
   records: new Map(),
   pendingReports: new Map(),
+  alertStates: new Map(),
   bootstrapPromise: null,
   persistedLoaded: false,
   lastPersistAt: 0,
@@ -243,6 +245,23 @@ async function hydratePersisted() {
           alertedAt: Number(item.alertedAt) || 0,
           updatedAt: Number(item.updatedAt) || 0,
         })
+      }
+    }
+    // 阈值告警状态：只接受已知字段，非法条目丢弃
+    if (parsed?.alerts && typeof parsed.alerts === "object") {
+      for (const [name, states] of Object.entries(parsed.alerts)) {
+        if (!states || typeof states !== "object") continue
+        const clean = {}
+        for (const [key, value] of Object.entries(states)) {
+          if (!value || typeof value !== "object") continue
+          clean[key] = {
+            since: Number(value.since) || 0,
+            fired: Boolean(value.fired),
+            lastFiredAt: Number(value.lastFiredAt) || 0,
+            suppressed: Boolean(value.suppressed),
+          }
+        }
+        state.alertStates.set(String(name), clean)
       }
     }
   } catch {}
@@ -1212,6 +1231,11 @@ export async function renameServer(oldName, newName) {
     if (record.snap) record.snap.name = cleanNew
     state.records.set(cleanNew, record)
   }
+  const alertStates = state.alertStates.get(cleanOld)
+  if (alertStates) {
+    state.alertStates.delete(cleanOld)
+    state.alertStates.set(cleanNew, alertStates)
+  }
   await refreshConfig()
   return config.servers.find(item => item.name === cleanNew)
 }
@@ -1227,6 +1251,7 @@ export async function removeServer(name) {
     return current
   })
   state.records.delete(cleanName)
+  state.alertStates.delete(cleanName)
   await refreshConfig()
   return config
 }
@@ -1329,6 +1354,120 @@ export async function handleReport(req, res) {
   }
 }
 
+// 从快照里提取告警规则需要的指标（一个规则只关心一个标量）。
+export function buildAlertMetrics(snap) {
+  if (!snap || typeof snap !== "object") return {}
+  const metrics = {}
+  const cpu = clampPercent(snap.cpu?.usage)
+  if (cpu !== null) metrics.cpu_usage = cpu
+
+  const memory = resolveMemoryUsage(snap.mem)
+  const memPct = computeUsagePercent(memory.effectiveUsed, memory.total)
+  if (memPct !== null) metrics.mem_usage = +memPct.toFixed(1)
+
+  const disks = Array.isArray(snap.disks) ? snap.disks : []
+  const diskPct = disks.reduce((max, disk) => {
+    const pct = computeUsagePercent(disk?.used, disk?.total)
+    return pct !== null && pct > max ? pct : max
+  }, -1)
+  if (diskPct >= 0) metrics.disk_usage = +diskPct.toFixed(1)
+  // smart_failed 用 1/0 表示，阈值固定 1
+  metrics.smart_failed = disks.some(disk => disk?.smart?.passed === false) ? 1 : 0
+
+  const gpus = Array.isArray(snap.gpus) ? snap.gpus : []
+  const gpuPct = gpus.reduce((max, gpu) => {
+    const value = clampPercent(gpu?.usage)
+    return value !== null && value > max ? value : max
+  }, -1)
+  if (gpuPct >= 0) metrics.gpu_usage = +gpuPct.toFixed(1)
+  const gpuTemp = gpus.reduce((max, gpu) => {
+    const value = clampTemp(gpu?.temp)
+    return value !== null && value > max ? value : max
+  }, -1)
+  if (gpuTemp >= 0) metrics.gpu_temp = +gpuTemp.toFixed(1)
+  return metrics
+}
+
+function formatAlertValue(metric, value) {
+  if (value === null || value === undefined) return "—"
+  if (metric === "gpu_temp") return formatTemp(value)
+  if (metric === "smart_failed") return value >= 1 ? "异常" : "正常"
+  return formatPercent(value)
+}
+
+function formatAlertEvent(event) {
+  const rule = event.rule
+  const label = ALERT_METRIC_LABELS[rule.metric] || rule.metric
+  if (rule.metric === "smart_failed") {
+    return event.type === "recover"
+      ? `✅ 服务器【${event.serverName}】磁盘 SMART 已恢复正常`
+      : `⚠️ 服务器【${event.serverName}】磁盘 SMART 健康状态异常（检测到故障盘）`
+  }
+  if (event.type === "recover") {
+    return `✅ 服务器【${event.serverName}】${label}已恢复${event.value === null ? "" : `（当前 ${formatAlertValue(rule.metric, event.value)}）`}`
+  }
+  const hold = rule.for ? `，持续 ${formatDuration(rule.for)}` : ""
+  const resumed = event.resumed ? "（静默结束补发）" : ""
+  const unit = rule.metric === "gpu_temp" ? "℃" : "%"
+  return `⚠️ 服务器【${event.serverName}】${label} ${formatAlertValue(rule.metric, event.value)}，达到阈值 ${rule.threshold}${unit}${hold}${resumed}`
+}
+
+// 阈值告警评估：每 10s tick 调一次，所有服务器的触发/恢复合并成一条消息。
+// 静默时段内只推进状态不发送；静默结束后补发一次（suppressed）。
+export async function scanAlerts(now = Date.now()) {
+  await bootstrap()
+  const config = await refreshConfig()
+  const rules = Array.isArray(config.alert?.rules) ? config.alert.rules : []
+  if (!config.alert?.enabled || !rules.length) return []
+
+  const quietRanges = parseQuietHours(config.alert.quiet_hours)
+  const quiet = inQuietHours(quietRanges, new Date(now))
+  const events = []
+
+  for (const conf of config.servers) {
+    const record = state.records.get(conf.name)
+    if (!record?.snap || record.state === "offline") continue
+    const metrics = buildAlertMetrics(record.snap)
+    const prevStates = state.alertStates.get(conf.name) || {}
+    const result = evaluateAlertRules({
+      rules,
+      metrics,
+      states: prevStates,
+      now,
+      quiet,
+      defaultCooldown: config.alert.cooldown,
+    })
+    state.alertStates.set(conf.name, pruneAlertStates(result.states, rules))
+    for (const event of result.events) events.push({ ...event, serverName: conf.name })
+  }
+
+  if (!events.length) return []
+  const messages = events.map(formatAlertEvent)
+  let sent = false
+  try {
+    if (globalThis.Bot?.sendMasterMsg) {
+      await Bot.sendMasterMsg(messages.join("\n"))
+      sent = true
+    }
+  } catch (err) {
+    ;(globalThis.logger || console).warn("[servermonitor] alert send failed", err)
+  }
+  if (!sent) {
+    // 发送失败时回退 fire 事件的状态，让下个 tick 重新尝试
+    for (const event of events) {
+      if (event.type !== "fire") continue
+      const states = state.alertStates.get(event.serverName)
+      const st = states?.[event.key]
+      if (st) {
+        st.fired = false
+        st.lastFiredAt = 0
+      }
+    }
+    return []
+  }
+  return messages
+}
+
 export async function scanOffline() {
   await bootstrap()
   const config = await refreshConfig()
@@ -1377,6 +1516,12 @@ export async function persist() {
     await flushPending()
     await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 })
     const config = await refreshConfig()
+    const rules = Array.isArray(config.alert?.rules) ? config.alert.rules : []
+    const alerts = {}
+    for (const conf of config.servers) {
+      const states = pruneAlertStates(state.alertStates.get(conf.name) || {}, rules)
+      if (Object.keys(states).length) alerts[conf.name] = states
+    }
     const payload = {
       v: 1,
       savedAt: Date.now(),
@@ -1391,6 +1536,7 @@ export async function persist() {
           snap: record?.snap || null,
         }
       }),
+      alerts,
     }
     await atomicWriteJson(SNAPSHOT_FILE, payload)
     state.lastPersistAt = Date.now()

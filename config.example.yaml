@@ -12,5 +12,16 @@ stale_after: 90
 alert:
   enabled: true
   cooldown: 120
+  quiet_hours: ""
+  rules: []
+  # 阈值告警示例（取消注释即可启用）：
+  # rules:
+  #   - metric: cpu_usage      # cpu_usage / mem_usage / disk_usage / gpu_usage / gpu_temp / smart_failed
+  #     threshold: 90          # 百分比或摄氏度；smart_failed 固定用 1
+  #     for: 300               # 条件持续多少秒才触发
+  #     cooldown: 1800         # 同一条规则两次通知的最小间隔
+  #   - metric: smart_failed
+  #     threshold: 1
+  #     for: 0
 render:
   imgType: png

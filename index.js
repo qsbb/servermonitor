@@ -17,6 +17,7 @@ import {
   removeServer,
   listPendingTokens,
   scanOffline as scanOfflineModel,
+  scanAlerts as scanAlertsModel,
   persist as persistModel,
   buildAddServerReply,
   buildServerCommand,
@@ -63,6 +64,7 @@ export class servermonitor extends plugin {
           fnc: async () => {
             initServerMonitorRoutes()
             await scanOfflineModel()
+            await scanAlertsModel()
           },
           cron: "*/10 * * * * *",
           log: false,
