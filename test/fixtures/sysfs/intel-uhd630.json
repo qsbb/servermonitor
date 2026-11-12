@@ -1,0 +1,5 @@
+{
+  "card1/device/vendor": "0x8086\n",
+  "card1/device/hwmon/hwmon4/energy1_input": "9000000\n",
+  "card1/device/hwmon/hwmon4/temp1_input": "45000\n"
+}

@@ -1,0 +1,8 @@
+{
+  "card0/device/vendor": "0x1002\n",
+  "card0/device/gpu_busy_percent": "37\n",
+  "card0/device/mem_info_vram_used": "2147483648\n",
+  "card0/device/mem_info_vram_total": "8589934592\n",
+  "card0/device/hwmon/hwmon3/temp1_input": "62000\n",
+  "card0/device/hwmon/hwmon3/power1_average": "145000000\n"
+}

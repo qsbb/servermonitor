@@ -437,8 +437,164 @@ async function collectGpuFromLspci(timeout = 5000) {
   }
 }
 
+// --- Linux DRM sysfs GPU（AMD / Intel） --------------------------------
+// 参考 beszel：agent/gpu_amd_linux.go、agent/gpu_intel_sysfs_linux.go。
+// AMD 直接读 gpu_busy_percent / mem_info_vram_* / hwmon；
+// Intel 没有通用占用率接口，功耗用 hwmon energy1_input 两次差分。
+const DRM_SYSFS_ROOT = "/sys/class/drm"
+const INTEL_GPU_ENERGY_MIN_INTERVAL_S = 0.5
+const MAX_GPU_ENTRIES = 8
+
+export function parseSysfsNumber(text) {
+  const raw = String(text ?? "").replace(/\u0000/g, "").trim()
+  if (!raw) return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+export function normalizeGpuVendor(text) {
+  const raw = String(text ?? "").trim().toLowerCase()
+  if (!raw) return null
+  if (/^0x0*1002$/.test(raw) || raw === "amd" || raw === "ati" || raw === "radeon") return "amd"
+  if (/^0x0*8086$/.test(raw) || raw === "intel" || raw === "i915" || raw === "xe") return "intel"
+  return null
+}
+
+function sysfsGpuModelName(vendor) {
+  if (vendor === "amd") return "AMD GPU"
+  if (vendor === "intel") return "Intel GPU"
+  return null
+}
+
+// 纯函数：把 sysfs 原始读数规整成上报用的 GPU 条目。
+// prev 是上一次的 { energyMicroJ, at }，仅 Intel 功耗差分需要。
+export function gpuEntryFromSysfs(data = {}, prev = null, now = Date.now()) {
+  const vendor = normalizeGpuVendor(data.vendor)
+  const tempRaw = data.tempMilli === null || data.tempMilli === undefined ? null : Number(data.tempMilli) / 1000
+  const temp = Number.isFinite(tempRaw) && tempRaw >= -20 && tempRaw <= 150 ? +tempRaw.toFixed(1) : null
+  let power = null
+  if (vendor === "amd") {
+    const microW = num(data.powerMicroW)
+    if (microW !== null && microW > 0) power = +(microW / 1e6).toFixed(1)
+  } else if (vendor === "intel") {
+    const energy = num(data.energyMicroJ)
+    if (energy !== null && prev && Number.isFinite(prev.energyMicroJ) && Number.isFinite(prev.at)) {
+      const dt = (now - prev.at) / 1000
+      const delta = energy - prev.energyMicroJ
+      // 计数器可能回绕 / 复位：负增量或时间倒流一律视为无效
+      if (dt >= INTEL_GPU_ENERGY_MIN_INTERVAL_S && delta >= 0 && dt <= 600) {
+        power = +(delta / dt / 1e6).toFixed(1)
+      }
+    }
+  }
+  if (power !== null && (power < 0 || power > 2000)) power = null
+  return {
+    gpu: {
+      model: data.model || sysfsGpuModelName(vendor),
+      usage: clipPercent(data.busy),
+      temp,
+      memUsed: gb(data.vramUsed),
+      memTotal: gb(data.vramTotal),
+      power,
+    },
+    energy: { energyMicroJ: num(data.energyMicroJ), at: now },
+  }
+}
+
+async function readSysfsNumber(file) {
+  try {
+    return parseSysfsNumber(await fs.readFile(file, "utf8"))
+  } catch {
+    return null
+  }
+}
+
+// hwmon 的编号因内核 / 驱动而异（hwmon0 / hwmon3 …），必须遍历后再取第一个可用值。
+async function readFirstHwmonNumber(deviceDir, names) {
+  const hwmonRoot = path.join(deviceDir, "hwmon")
+  let dirs = []
+  try {
+    dirs = await fs.readdir(hwmonRoot, { withFileTypes: true })
+  } catch {
+    return null
+  }
+  for (const dirent of dirs) {
+    if (!dirent.isDirectory() && !dirent.isSymbolicLink()) continue
+    for (const name of names) {
+      const value = await readSysfsNumber(path.join(hwmonRoot, dirent.name, name))
+      if (value !== null) return value
+    }
+  }
+  return null
+}
+
+const intelGpuEnergyState = new Map()
+
+// 采集 Linux 上 AMD / Intel 显卡；NVIDIA 仍由 nvidia-smi 负责（优先级更高）。
+// models 来自 lspci，只有数量一一对应时才绑定型号，避免多卡张冠李戴。
+export async function collectGpuFromDrmSysfs({
+  root = DRM_SYSFS_ROOT,
+  now = Date.now(),
+  models = [],
+  energyState = intelGpuEnergyState,
+  platform = process.platform,
+} = {}) {
+  if (platform !== "linux") return null
+  let entries = []
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true })
+  } catch {
+    return null
+  }
+  // card0-VGA-1 这类带连字符的是非主卡目录，忽略
+  const cards = entries
+    .filter(dirent => /^card\d+$/.test(dirent.name))
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }))
+  const gpus = []
+  for (const card of cards) {
+    const deviceDir = path.join(root, card.name, "device")
+    const vendorText = await fs.readFile(path.join(deviceDir, "vendor"), "utf8").catch(() => "")
+    const vendor = normalizeGpuVendor(vendorText)
+    if (!vendor) continue
+    const busy = await readSysfsNumber(path.join(deviceDir, "gpu_busy_percent"))
+    const vramUsed = await readSysfsNumber(path.join(deviceDir, "mem_info_vram_used"))
+    const vramTotal = await readSysfsNumber(path.join(deviceDir, "mem_info_vram_total"))
+    const tempMilli = await readFirstHwmonNumber(deviceDir, ["temp1_input"])
+    const powerMicroW = vendor === "amd"
+      ? await readFirstHwmonNumber(deviceDir, ["power1_average", "power1_input"])
+      : null
+    const energyMicroJ = vendor === "intel"
+      ? await readFirstHwmonNumber(deviceDir, ["energy1_input"])
+      : null
+    const prev = energyState.get(card.name) || null
+    const { gpu, energy } = gpuEntryFromSysfs(
+      { vendor, busy, vramUsed, vramTotal, tempMilli, powerMicroW, energyMicroJ },
+      prev,
+      now,
+    )
+    if (vendor === "intel") energyState.set(card.name, energy)
+    gpus.push(gpu)
+  }
+  if (!gpus.length) return null
+  const limited = gpus.slice(0, MAX_GPU_ENTRIES)
+  if (Array.isArray(models) && models.length === limited.length) {
+    limited.forEach((gpu, idx) => {
+      const model = String(models[idx] || "").trim()
+      if (model) gpu.model = model
+    })
+  }
+  return limited
+}
+
 export async function collectGpuFallback() {
-  if (process.platform === "linux") return await collectGpuFromLspci()
+  if (process.platform === "linux") {
+    // 先取 lspci 型号，再读 DRM sysfs 的实时指标；数量一一对应才绑定型号。
+    const lspciGpus = await safe(() => collectGpuFromLspci(), [], 5000, "gpu-lspci")
+    const models = (Array.isArray(lspciGpus) ? lspciGpus : []).map(item => item?.model).filter(Boolean)
+    const sysfsGpus = await safe(() => collectGpuFromDrmSysfs({ models }), null, 3000, "gpu-sysfs")
+    if (Array.isArray(sysfsGpus) && sysfsGpus.length) return sysfsGpus
+    return Array.isArray(lspciGpus) ? lspciGpus : null
+  }
   // Windows 上 WMI 的 Win32_VideoController 没有 Utilization%（systeminformation 也拿不到），
   // 非 NVIDIA 显卡需要 GPU 性能计数器补占用率 / 专用显存；两者并行取，再按适配器合并。
   const wantCounters = process.platform === "win32"
