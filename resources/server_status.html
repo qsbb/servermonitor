@@ -20,6 +20,8 @@
           <i class="sb-dot" style="background: {{s.stateColor || '#94a3b8'}}; box-shadow: 0 0 8px {{s.stateColor || '#94a3b8'}}66;"></i>
           <span class="sb-name">{{s.name || '未命名服务器'}}</span>
           <span class="sb-badge" style="color: {{s.stateColor || '#94a3b8'}}; border-color: {{s.stateColor || '#94a3b8'}}44; background: {{s.stateColor || '#94a3b8'}}14;">{{s.stateText || '—'}}</span>
+          {{if s.slowStale}}<span class="sb-badge sb-badge-stale">数据过期</span>{{/if}}
+          {{if s.hasSmartWarning}}<span class="sb-badge sb-badge-danger">磁盘告警</span>{{/if}}
         </div>
         <div class="sb-sub">{{s.osText || '—'}}<span class="sb-sub-sep">·</span>运行 {{s.uptimeText || '—'}}</div>
       </div>
@@ -63,6 +65,8 @@
               </div>
               <div class="sb-bar sb-bar-xs"><i style="width: {{d.hasPct ? d.pct : 0}}%; background-color: {{d.color || '#98a0b3'}};"></i></div>
               {{if d.text}}<div class="sb-disk-sub">{{d.text}}</div>{{/if}}
+              {{if d.smartFailed}}<div class="sb-disk-sub sb-disk-smart-fail">SMART 告警{{if d.smart && d.smart.reallocated}} · 重分配 {{d.smart.reallocated}}{{/if}}</div>
+              {{else if d.smartText}}<div class="sb-disk-sub">{{d.smartText}}</div>{{/if}}
             </div>
             {{/each}}
             {{if s.diskOverflow}}<div class="sb-disk-sub">另有 {{s.diskOverflow}} 个挂载点未显示</div>{{/if}}
@@ -223,6 +227,7 @@
             <div class="sb-kv"><span class="sb-kv-key">数据年龄</span><span class="sb-kv-val">{{s.dataAgeText || '—'}}</span></div>
           </div>
         </div>
+        {{if s.smartWarningText}}<div class="sb-kv sb-kv-danger"><span class="sb-kv-key">磁盘健康</span><span class="sb-kv-val">{{s.smartWarningText}}</span></div>{{/if}}
       </div>
       {{/if}}
 
@@ -230,6 +235,7 @@
         {{if s.noteText}}<span class="sb-meta-item">备注 {{s.noteText}}</span>{{/if}}
         {{if !s.hasGpu && s.gpuEmptyText && s.gpuEmptyText !== '—'}}<span class="sb-meta-item">GPU {{s.gpuEmptyText}}</span>{{/if}}
         <span class="sb-meta-item">数据 {{s.dataAgeText || '从未上报'}}</span>
+        {{if s.slowStale}}<span class="sb-meta-item sb-meta-stale">慢采集数据已过期</span>{{/if}}
         <span class="sb-meta-item">上报 {{s.lastSeenText || '—'}}</span>
       </div>
     </div>

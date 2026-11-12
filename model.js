@@ -145,6 +145,46 @@ function clampTemp(value) {
   return n
 }
 
+// 磁盘 SMART 白名单：只保留已知字段，数字取整并限幅，全空则视为没有数据。
+function sanitizeDiskSmart(value) {
+  if (!value || typeof value !== "object") return null
+  const smart = {
+    passed: typeof value.passed === "boolean" ? value.passed : null,
+    temp: clampTemp(value.temp),
+    powerOnHours: clampNonNegative(value.powerOnHours, 10_000_000),
+    reallocated: clampNonNegative(value.reallocated, 100_000_000),
+    pending: clampNonNegative(value.pending, 100_000_000),
+    mediaErrors: clampNonNegative(value.mediaErrors, 100_000_000),
+  }
+  if (Object.values(smart).every(item => item === null)) return null
+  return {
+    passed: smart.passed,
+    temp: smart.temp,
+    powerOnHours: smart.powerOnHours === null ? null : Math.round(smart.powerOnHours),
+    reallocated: smart.reallocated === null ? null : Math.round(smart.reallocated),
+    pending: smart.pending === null ? null : Math.round(smart.pending),
+    mediaErrors: smart.mediaErrors === null ? null : Math.round(smart.mediaErrors),
+  }
+}
+
+// 采集健康度时间戳：钳制到合理区间，非法值一律 null（不信任上报方）。
+function sanitizeHealth(value) {
+  const source = value && typeof value === "object" ? value : {}
+  const now = Date.now()
+  const clampTs = item => {
+    const n = numOrNull(item)
+    if (n === null) return null
+    if (n > now + 5 * 60 * 1000 || n < now - 365 * 24 * 60 * 60 * 1000) return null
+    return n
+  }
+  const health = {
+    fastAt: clampTs(source.fastAt),
+    slowAt: clampTs(source.slowAt),
+    smartAt: clampTs(source.smartAt),
+  }
+  return Object.values(health).every(item => item === null) ? null : health
+}
+
 function clampPower(value) {
   const n = numOrNull(value)
   if (n === null || n < 0 || n > 10000) return null
@@ -354,10 +394,15 @@ export function sanitizeSnapshot(body) {
         .slice(0, 16)
         .map(item => {
           if (!item || typeof item !== "object") return null
+          const device = typeof item.device === "string" && /^\/dev\/[A-Za-z0-9._-]{1,64}$/.test(item.device)
+            ? item.device
+            : null
           return {
             mount: strOrNull(item.mount, 128),
             used: clampNonNegative(item.used),
             total: clampNonNegative(item.total),
+            device,
+            smart: sanitizeDiskSmart(item.smart),
           }
         })
         .filter(item => item.mount && item.total !== null)
@@ -426,6 +471,7 @@ export function sanitizeSnapshot(body) {
     },
     disks,
     load: Array.isArray(body.load) ? body.load.map(value => clampNonNegative(value, 10000)).slice(0, 3) : null,
+    health: sanitizeHealth(body.health),
   }
 }
 
@@ -493,7 +539,7 @@ async function getCachedLocalSnapshot() {
   return snap
 }
 
-async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
+async function buildLocalEntry(timeoutMs = 30000, now = Date.now(), options = {}) {
   const snap = await getCachedLocalSnapshot()
   const host = snap.os?.hostname || snap.name || os.hostname()
   const conf = {
@@ -507,7 +553,7 @@ async function buildLocalEntry(timeoutMs = 30000, now = Date.now()) {
     state: "online",
     alertedAt: 0,
   }
-  return decorateEntry(conf, record, now, timeoutMs)
+  return decorateEntry(conf, record, now, timeoutMs, options)
 }
 
 function formatDuration(seconds) {
@@ -803,6 +849,19 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000,
 
   const diskText = snap ? formatDiskText(snap.disks) : "—"
   const allDisks = snap && Array.isArray(snap.disks) ? snap.disks : []
+  const smartFailing = allDisks.filter(d => d?.smart && d.smart.passed === false)
+  const hasSmartWarning = smartFailing.length > 0
+  const smartWarningText = hasSmartWarning
+    ? `磁盘 SMART 告警：${smartFailing.map(d => `${d.mount || "?"}${d.smart.reallocated ? `（重分配 ${d.smart.reallocated}）` : ""}`).join("、")}`
+    : ""
+  // 采集健康度：慢采集（磁盘/GPU/温度/功耗）超过 stale_after 秒未更新即视为过期
+  const staleAfterMs = Math.max(0, Number(options?.staleAfter ?? 90)) * 1000
+  const snapTs = numOrNull(snap?.agent_ts)
+  const fastTs = numOrNull(snap?.health?.fastAt) ?? snapTs ?? numOrNull(record?.lastSeen)
+  const slowTs = numOrNull(snap?.health?.slowAt) ?? snapTs ?? numOrNull(record?.lastSeen)
+  const isStale = staleAfterMs > 0 && Boolean(snap)
+  const fastStale = isStale && fastTs !== null && now - fastTs > staleAfterMs
+  const slowStale = isStale && slowTs !== null && now - slowTs > staleAfterMs
   const diskOverflow = Math.max(0, allDisks.length - 8)
   const diskView = snap
     ? allDisks
@@ -810,6 +869,7 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000,
           const pct = computeUsagePercent(d.used, d.total)
           const used = formatSizeGB(d.used)
           const total = formatSizeGB(d.total)
+          const smart = d.smart && typeof d.smart === "object" ? d.smart : null
           return {
             mount: String(d.mount || "?"),
             pct: pct ?? 0,
@@ -818,6 +878,16 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000,
             text: `${used}/${total}`,
             usedText: used,
             totalText: total,
+            device: d.device || null,
+            smart,
+            smartFailed: Boolean(smart && smart.passed === false),
+            smartText: smart
+              ? [
+                  smart.passed === false ? "SMART 告警" : smart.passed === true ? "SMART 正常" : null,
+                  smart.temp !== null && smart.temp !== undefined ? `${formatTemp(smart.temp)}` : null,
+                  smart.powerOnHours !== null && smart.powerOnHours !== undefined ? `通电 ${smart.powerOnHours}h` : null,
+                ].filter(Boolean).join(" · ") || "—"
+              : "",
           }
         })
         .sort((a, b) => b.pct - a.pct)
@@ -897,6 +967,10 @@ export function decorateEntry(conf, record, now = Date.now(), timeoutMs = 30000,
     cardRows,
     pro: Boolean(options?.pro),
     diskOverflow,
+    hasSmartWarning,
+    smartWarningText,
+    fastStale,
+    slowStale,
     netText,
     netLines,
     netIfaceText,
@@ -925,7 +999,8 @@ export async function getEntries(options = {}) {
   const config = await refreshConfig()
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
-  const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs, options))
+  const decorateOptions = { ...options, staleAfter: options.staleAfter ?? config.stale_after }
+  const registered = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs, decorateOptions))
   if (!shouldShowLocalEntry(config)) return registered
   const local = [await buildLocalEntry(timeoutMs, now)]
   return [...local, ...registered]
@@ -937,8 +1012,9 @@ export async function getEntryByName(name) {
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
   const conf = resolveConfigServer(name)
-  if (!conf) return isLocalName(name) ? await buildLocalEntry(timeoutMs, now) : null
-  return decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs)
+  const decorateOptions = { staleAfter: config.stale_after }
+  if (!conf) return isLocalName(name) ? await buildLocalEntry(timeoutMs, now, decorateOptions) : null
+  return decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs, decorateOptions)
 }
 
 export async function buildStatusData(entries, pageNum = 1, pageCount = 1, allEntries = null, config = null, options = {}) {
@@ -1010,7 +1086,7 @@ export async function listServersText() {
   const config = await refreshConfig()
   const timeoutMs = config.offline_timeout * 1000
   const now = Date.now()
-  const entries = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs))
+  const entries = config.servers.map(conf => decorateEntry(conf, state.records.get(conf.name) ?? null, now, timeoutMs, { staleAfter: config.stale_after }))
   if (!entries.length) return "尚未注册服务器；发送 #服务器状态 将显示本机状态。"
 
   const lines = []

@@ -23,6 +23,7 @@ const DEFAULT_CONFIG = {
   local_server_name: "",
   simple_style: "bars",
   status_cooldown: 10,
+  stale_after: 90,
   alert: {
     enabled: true,
     cooldown: 120,
@@ -241,6 +242,7 @@ function stringifyConfig(config) {
   lines.push(`local_server_name: ${JSON.stringify(String(data.local_server_name || ""))}`)
   lines.push(`simple_style: ${JSON.stringify(String(data.simple_style || "bars"))}`)
   lines.push(`status_cooldown: ${data.status_cooldown}`)
+  lines.push(`stale_after: ${data.stale_after}`)
   lines.push(`report_enabled: ${data.report_enabled}`)
   lines.push("alert:")
   lines.push(`  enabled: ${data.alert.enabled}`)
@@ -298,6 +300,7 @@ export function normalizeConfig(input = {}) {
     ? String(config.simple_style).trim()
     : "bars"
   base.status_cooldown = Math.max(0, toInt(config.status_cooldown, base.status_cooldown))
+  base.stale_after = Math.max(0, toInt(config.stale_after, base.stale_after))
 
   const alert = config.alert && typeof config.alert === "object" ? config.alert : {}
   base.alert = {

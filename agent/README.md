@@ -114,6 +114,8 @@ node agent.mjs
 | `SM_INTERVAL` | `--interval` | 基础上传间隔，秒 |
 | `SM_SLOW_INTERVAL` | `--slow-interval` | 慢速采集间隔，秒 |
 | `SM_TIMEOUT` | `--timeout` | 上传超时，毫秒 |
+| `SM_SMART` | `--smart` | 是否采集磁盘 SMART（Linux，默认开启；需要 smartctl） |
+| `SM_SMART_INTERVAL` | `--smart-interval` | SMART 采集间隔，秒（默认 600，最小 60） |
 | `SM_DRY_RUN` | `--dry-run` | 只输出快照 |
 | `SM_ONCE` | `--once` | 上传一次后退出 |
 

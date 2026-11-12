@@ -344,6 +344,7 @@ async function collectLoad() {
 }
 
 async function collectSnapshot() {
+  const ts = Date.now()
   const [cpuUsage, cpuTemp, gpus, cpuPower, net, disks, load, memAvailable] = await Promise.all([
     sampleCpuUsage(),
     collectCpuTempLinux(),
@@ -385,6 +386,8 @@ async function collectSnapshot() {
     net,
     disks,
     load,
+    // 本机采集是一次性同步完成的，快慢采集时间戳相同；SMART 仅由 agent 采集
+    health: { fastAt: ts, slowAt: ts, smartAt: null },
   }
 }
 

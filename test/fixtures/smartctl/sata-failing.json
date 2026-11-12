@@ -1,0 +1,14 @@
+{
+  "device": { "name": "/dev/sdb", "type": "sat", "protocol": "ATA" },
+  "model_name": "WDC WD20EZRZ-00Z5HB0",
+  "smart_status": { "passed": false },
+  "temperature": { "current": 52 },
+  "power_on_time": { "hours": 41200 },
+  "ata_smart_attributes": {
+    "revision": 10,
+    "table": [
+      { "id": 5, "name": "Reallocated_Sector_Ct", "value": 84, "worst": 84, "thresh": 10, "raw": { "value": 8, "string": "8" } },
+      { "id": 197, "name": "Current_Pending_Sector", "value": 97, "worst": 97, "thresh": 0, "raw": { "value": 2, "string": "2" } }
+    ]
+  }
+}

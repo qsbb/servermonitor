@@ -34,13 +34,13 @@ function parseArgs(argv = []) {
 
 function help() {
   const bin = process.pkg ? "servermonitor-agent.exe" : "node agent.mjs"
-  return `usage: ${bin} --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--once]
+  return `usage: ${bin} --name <name> --token <token> [--report-url <url>] [--interval 10] [--slow-interval 30] [--timeout 5000] [--smart 1] [--smart-interval 600] [--once]
        ${bin} --dry-run [--name <name>]     只采集并打印 JSON，不上报
        ${bin} run                            使用 servermonitor-agent.json 常驻运行
        ${bin}                                Windows 下打开配置菜单
 
 config: servermonitor-agent.json（与 agent.mjs 同目录）
-env: SM_NAME, SM_TOKEN, SM_REPORT_URL, SM_INTERVAL, SM_SLOW_INTERVAL, SM_TIMEOUT, SM_DRY_RUN, SM_ONCE`
+env: SM_NAME, SM_TOKEN, SM_REPORT_URL, SM_INTERVAL, SM_SLOW_INTERVAL, SM_TIMEOUT, SM_SMART, SM_SMART_INTERVAL, SM_DRY_RUN, SM_ONCE`
 }
 
 function envValue(name, fallback = "") {
@@ -168,7 +168,7 @@ export function filterDisks(list = []) {
     .map(item => {
       const raw = String(item.mount || item.fs || "").trim()
       const mount = raw === "/host" || raw === "/System/Volumes/Data" ? "/" : raw || "?"
-      return { mount, used: gb(item.used), total: gb(item.size ?? item.total) }
+      return { mount, used: gb(item.used), total: gb(item.size ?? item.total), device: normalizeBlockDevice(item.fs) }
     })
     .filter(item => item.total !== null)
     .sort((a, b) => {
@@ -202,6 +202,133 @@ export async function collectDiskLinuxDf(paths = [], timeout = 5000) {
   if (paths.length) args.push("--", ...paths)
   const { stdout } = await execFileAsync("df", args, { timeout, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 })
   return filterDisks(parseDfOutput(stdout))
+}
+
+// 把分区设备名规整成整盘设备名，供 SMART 匹配：
+// /dev/sda2 → /dev/sda，/dev/nvme0n1p1 → /dev/nvme0n1，/dev/mmcblk0p1 → /dev/mmcblk0。
+// 网络挂载、/dev/mapper/*、/dev/disk/by-* 等无法对应物理盘的一律返回 null。
+export function normalizeBlockDevice(value) {
+  const raw = String(value || "").trim()
+  if (!raw.startsWith("/dev/")) return null
+  const name = raw.slice(5)
+  if (!/^[a-z0-9]+$/.test(name)) return null
+  // RAID / loop / zram / device-mapper 的编号是设备本身的一部分，不能剥
+  if (/^(md|loop|ram|zram|dm-)/.test(name)) return `/dev/${name}`
+  // nvme0n1 / mmcblk0 这类整盘名本身带数字；只有尾部 pN 才是分区
+  const nvmePart = name.match(/^(nvme\d+n\d+|mmcblk\d+)p\d+$/)
+  if (nvmePart) return `/dev/${nvmePart[1]}`
+  // nvme0 / nvme0n1 / mmcblk0 一律视为整盘，不做 sdX 式数字剥离
+  if (/^(nvme|mmcblk)/.test(name)) return `/dev/${name}`
+  // sdX / vdX / hdX 的分区：字母前缀 + 数字
+  const scsi = name.match(/^([a-z]+)(\d+)$/)
+  if (scsi) return `/dev/${scsi[1]}`
+  return `/dev/${name}`
+}
+
+// --- SMART 磁盘健康（smartctl --json） --------------------------------
+// 可选依赖：缺少 smartmontools / 无权限 / 非 Linux 时全部静默降级。
+const SMART_TIMEOUT_MS = 3000
+const SMART_MAX_DEVICES = 8
+
+export function parseSmartScan(text) {
+  let json = null
+  try {
+    json = JSON.parse(String(text || ""))
+  } catch {
+    return []
+  }
+  const devices = Array.isArray(json?.devices) ? json.devices : []
+  const seen = new Set()
+  const out = []
+  for (const item of devices) {
+    const name = String(item?.name || item?.info_name || "").trim()
+    if (!name.startsWith("/dev/")) continue
+    const device = normalizeBlockDevice(name)
+    if (!device || seen.has(device)) continue
+    seen.add(device)
+    out.push({ name, device })
+    if (out.length >= SMART_MAX_DEVICES) break
+  }
+  return out
+}
+
+// 解析 `smartctl -H -A -j <dev>` 的 JSON；字段缺失返回 null。
+// 注意 smartctl 对故障盘会返回非 0 退出码，调用方仍需解析 stdout。
+export function parseSmartHealth(text) {
+  let json = null
+  try {
+    json = JSON.parse(String(text || ""))
+  } catch {
+    return null
+  }
+  if (!json || typeof json !== "object") return null
+  const status = json.smart_status
+  const passed = status?.passed === true ? true : status?.passed === false ? false : null
+  const nvme = json.nvme_smart_health_information_log
+  const tempRaw = num(json.temperature?.current) ?? num(nvme?.temperature)
+  const temp = tempRaw !== null && tempRaw >= -20 && tempRaw <= 150 ? +tempRaw.toFixed(1) : null
+  const hours = num(json.power_on_time?.hours) ?? num(nvme?.power_on_hours)
+  const table = json.ata_smart_attributes?.table
+  const attr = id => {
+    if (!Array.isArray(table)) return null
+    const row = table.find(item => Number(item?.id) === id)
+    return num(row?.raw?.value)
+  }
+  const reallocated = attr(5)
+  const pending = attr(197)
+  const mediaErrors = num(nvme?.media_errors)
+  const health = {
+    passed,
+    temp,
+    powerOnHours: hours === null ? null : Math.max(0, Math.round(hours)),
+    reallocated: reallocated === null ? null : Math.max(0, Math.round(reallocated)),
+    pending: pending === null ? null : Math.max(0, Math.round(pending)),
+    mediaErrors: mediaErrors === null ? null : Math.max(0, Math.round(mediaErrors)),
+  }
+  const hasAny = Object.values(health).some(value => value !== null)
+  return hasAny ? health : null
+}
+
+async function runSmartctl(args, timeout = SMART_TIMEOUT_MS) {
+  try {
+    const { stdout } = await execFileAsync("smartctl", args, { timeout, killSignal: "SIGKILL", maxBuffer: 2 * 1024 * 1024 })
+    return String(stdout || "")
+  } catch (err) {
+    // 故障盘会以非 0 退出，但 stdout 里仍有完整 JSON
+    const stdout = err?.stdout
+    return stdout ? String(stdout) : null
+  }
+}
+
+// 返回 Map<整盘设备, health>；没有可用数据时返回 null，不影响其他采集。
+export async function collectSmartMap({
+  timeout = SMART_TIMEOUT_MS,
+  maxDevices = SMART_MAX_DEVICES,
+  platform = process.platform,
+  run = null,
+} = {}) {
+  if (platform !== "linux") return null
+  const exec = run || (args => runSmartctl(args, timeout))
+  const scan = await exec(["--scan", "--json"])
+  if (!scan) return null
+  const devices = parseSmartScan(scan)
+  if (!devices.length) return null
+  const map = new Map()
+  for (const device of devices.slice(0, maxDevices)) {
+    const stdout = await exec(["-H", "-A", "-j", device.name])
+    if (!stdout) continue
+    const health = parseSmartHealth(stdout)
+    if (health) map.set(device.device, health)
+  }
+  return map.size ? map : null
+}
+
+export function attachSmartToDisks(disks = [], smartMap = null) {
+  if (!Array.isArray(disks) || !smartMap || !smartMap.size) return disks
+  return disks.map(disk => {
+    const smart = disk?.device ? smartMap.get(disk.device) : null
+    return smart ? { ...disk, smart } : disk
+  })
 }
 
 const PSEUDO_FS_RE = /^(proc|sysfs|devtmpfs|tmpfs|devpts|cgroup2?|efivarfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|ramfs|nsfs|overlay|squashfs|fuse|fuse\.[\w.]+|rpc_pipefs|selinuxfs)$/i
@@ -865,7 +992,7 @@ export async function collectWindowsGpuCounters(timeout = 5000) {
 }
 
 class Collector {
-  constructor({ slowInterval = 30_000 } = {}) {
+  constructor({ slowInterval = 30_000, smart = true, smartInterval = 600_000 } = {}) {
     this.slowInterval = Math.max(5_000, slowInterval)
     this.staticCache = null
     this.fastCache = null
@@ -875,6 +1002,12 @@ class Collector {
     this.lastSlowAt = 0
     this.raplPrev = new Map()
     this.failCount = 0
+    this.smartEnabled = Boolean(smart)
+    this.smartInterval = Math.max(60_000, Number(smartInterval) || 600_000)
+    this.smartCache = null
+    this.smartAt = 0
+    // 采集健康度：界面据此区分「没这项数据」与「采集失败/过期」
+    this.health = { fastAt: 0, slowAt: 0, smartAt: 0 }
     // systeminformation needs two samples before network rates become available
     safe(() => si.networkStats(), [], 5000).catch(() => [])
   }
@@ -933,7 +1066,21 @@ class Collector {
       net,
     }
     this.lastFastAt = now
+    this.health.fastAt = now
     return this.fastCache
+  }
+
+  async refreshSmart() {
+    if (!this.smartEnabled) return null
+    const now = Date.now()
+    if (this.smartCache && now - this.smartAt < this.smartInterval) return this.smartCache
+    const map = await safe(() => collectSmartMap(), null, 15_000, "smart")
+    this.smartCache = map
+    if (map) {
+      this.smartAt = now
+      this.health.smartAt = now
+    }
+    return map
   }
 
   async refreshSlow(force = false) {
@@ -945,13 +1092,15 @@ class Collector {
       collectGpuFromNvidiaSmi(),
     ])
     const gpuList = Array.isArray(gpus) && gpus.length ? gpus : await collectGpuFallback()
+    const smartMap = await this.refreshSmart()
     this.slowCache = {
-      disks,
+      disks: attachSmartToDisks(disks, smartMap),
       cpuTemp: temp,
       gpus: Array.isArray(gpuList) ? gpuList.slice(0, 8) : gpuList,
       cpuPower: await safe(() => collectCpuPowerLinux(this.raplPrev), null, 5000, "cpuPower"),
     }
     this.lastSlowAt = now
+    this.health.slowAt = now
     return this.slowCache
   }
 
@@ -983,6 +1132,11 @@ class Collector {
       net: fastInfo.net,
       disks: Array.isArray(slowInfo.disks) ? slowInfo.disks.slice(0, 16) : slowInfo.disks,
       load: fastInfo.load,
+      health: {
+        fastAt: this.health.fastAt || null,
+        slowAt: this.health.slowAt || null,
+        smartAt: this.health.smartAt || null,
+      },
     }
   }
 }
@@ -1200,6 +1354,8 @@ async function main() {
   const interval = Math.max(5, Number(firstNonEmpty(args.interval, envValue("SM_INTERVAL"), fileConfig.interval) || 10))
   const slowInterval = Math.max(interval, Number(firstNonEmpty(args["slow-interval"], args.slowInterval, envValue("SM_SLOW_INTERVAL"), fileConfig.slowInterval) || 30))
   const timeout = Math.max(1000, Number(firstNonEmpty(args.timeout, envValue("SM_TIMEOUT"), fileConfig.timeout) || 5000))
+  const smartEnabled = !["0", "false", "off", "no"].includes(String(firstNonEmpty(args.smart, envValue("SM_SMART"), fileConfig.smart, "")).trim().toLowerCase())
+  const smartInterval = Math.max(60, Number(firstNonEmpty(args["smart-interval"], args.smartInterval, envValue("SM_SMART_INTERVAL"), fileConfig.smartInterval) || 600))
 
   if (!name || (!token && !dryRun)) {
     console.error(help())
@@ -1210,7 +1366,11 @@ async function main() {
     console.error(`[servermonitor-agent] warning: report URL ${reportUrl} 是回环地址，只有 Yunzai 与 agent 在同一台机器时才能上报成功`)
   }
 
-  const collector = new Collector({ slowInterval: slowInterval * 1000 })
+  const collector = new Collector({
+    slowInterval: slowInterval * 1000,
+    smart: smartEnabled,
+    smartInterval: smartInterval * 1000,
+  })
   collector.name = name
 
   async function tick() {

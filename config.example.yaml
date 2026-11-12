@@ -8,6 +8,7 @@ public_status: false
 include_local: true
 local_server_name: ""
 simple_style: "bars"
+stale_after: 90
 alert:
   enabled: true
   cooldown: 120

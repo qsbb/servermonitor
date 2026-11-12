@@ -1,0 +1,15 @@
+{
+  "device": { "name": "/dev/sda", "type": "sat", "protocol": "ATA" },
+  "model_name": "ST4000VN008-2DR166",
+  "smart_status": { "passed": true },
+  "temperature": { "current": 38 },
+  "power_on_time": { "hours": 15322 },
+  "ata_smart_attributes": {
+    "revision": 10,
+    "table": [
+      { "id": 5, "name": "Reallocated_Sector_Ct", "value": 100, "worst": 100, "thresh": 10, "raw": { "value": 0, "string": "0" } },
+      { "id": 9, "name": "Power_On_Hours", "value": 68, "worst": 68, "thresh": 0, "raw": { "value": 15322, "string": "15322" } },
+      { "id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "raw": { "value": 0, "string": "0" } }
+    ]
+  }
+}

@@ -182,6 +182,7 @@ public_status: false  # true 时任何人发送 #服务器状态 都会响应；
 include_local: true   # true 时 #服务器状态 默认包含 Yunzai 本机卡片
 local_server_name: "" # 与某台已注册机器同机时填它的名字，隐藏重复的“本机”卡片
 simple_style: "bars"   # 简洁视图样式：bars / rings / arcs / tiles
+stale_after: 90       # 慢采集超过多少秒未更新视为数据过期（0 关闭）
 page_size: 8          # 每张图显示服务器数量
 offline_timeout: 30   # 超过多少秒未上报判定离线
 status_cooldown: 10   # 状态查看命令的按用户冷却秒数，0 关闭（防渲染滥用）

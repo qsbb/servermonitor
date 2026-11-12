@@ -1,0 +1,9 @@
+{
+  "json_format_version": [1, 0],
+  "smartctl": { "version": [7, 3], "svn_revision": "5338", "platform_info": "x86_64-linux" },
+  "devices": [
+    { "name": "/dev/sda", "info_name": "/dev/sda", "type": "sat", "protocol": "ATA" },
+    { "name": "/dev/nvme0", "info_name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe" },
+    { "name": "/dev/sda1", "info_name": "/dev/sda1", "type": "sat", "protocol": "ATA" }
+  ]
+}

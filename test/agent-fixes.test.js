@@ -255,10 +255,11 @@ test("parseDfOutput parses GNU df rows and maps /host back to /", { skip }, () =
     { mount: "/mnt/data", type: "ext4", fs: "/dev/sdb1", used: 2048000 * 1024, size: 9765632 * 1024 },
     { mount: "/run", type: "tmpfs", fs: "tmpfs", used: 0, size: 1024 * 1024 },
   ])
-  // 过滤后：vfat/tmpfs/overlay 属于排除类型；/host 前缀映射回宿主路径；输出换算成 GB 且不带 type/fs
+  // 过滤后：vfat/tmpfs/overlay 属于排除类型；/host 前缀映射回宿主路径；输出换算成 GB
+  // 并附带整盘设备名（供 SMART 匹配）
   assert.deepEqual(agent.filterDisks(rows), [
-    { mount: "/", used: +(108715396 / 2 ** 20).toFixed(1), total: +(225983756 / 2 ** 20).toFixed(1) },
-    { mount: "/mnt/data", used: +(2048000 / 2 ** 20).toFixed(1), total: +(9765632 / 2 ** 20).toFixed(1) },
+    { mount: "/", used: +(108715396 / 2 ** 20).toFixed(1), total: +(225983756 / 2 ** 20).toFixed(1), device: "/dev/sda" },
+    { mount: "/mnt/data", used: +(2048000 / 2 ** 20).toFixed(1), total: +(9765632 / 2 ** 20).toFixed(1), device: "/dev/sdb" },
   ])
 })
 

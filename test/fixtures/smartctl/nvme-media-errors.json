@@ -1,0 +1,15 @@
+{
+  "device": { "name": "/dev/nvme0", "type": "nvme", "protocol": "NVMe" },
+  "model_name": "Samsung SSD 980 PRO 1TB",
+  "smart_status": { "passed": true },
+  "temperature": { "current": 41 },
+  "power_on_time": { "hours": 900 },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 41,
+    "available_spare": 100,
+    "percentage_used": 4,
+    "media_errors": 3,
+    "power_on_hours": 900
+  }
+}
