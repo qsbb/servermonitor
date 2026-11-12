@@ -1,9 +1,12 @@
 # Servermonitor 二期开发方案（借鉴 beszel）
 
-> 文档状态：设计稿（待评审）
+> 文档状态：已实现（M1–M4，2026-11-13；M5 发版待定）
 > 编写日期：2026-11-13
 > 基线版本：`v0.1.21`（commit `1fe2d88`）
 > 目标版本：`v0.2.0`（minor）
+>
+> 落地提交：M1 `5169560`、M2 `af61e11`、M3 `20c7e2d`、M4 `9b0ad0e`。
+> 与本文的差异：SMART 仅 Linux（Windows 需捆绑 smartctl，暂缓）；趋势图范围固定 24h/7d/30d，未做自定义区间。
 > 参考项目：[beszel](https://github.com/henrygd/beszel)（MIT，Go，hub + agent + Web UI）
 > 适用范围：`agent/agent.mjs`、`model.js`、`config.js`、`index.js`、`resources/*`、`test/*`
 
