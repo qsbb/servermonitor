@@ -23,5 +23,10 @@ alert:
   #   - metric: smart_failed
   #     threshold: 1
   #     for: 0
+history:
+  enabled: true       # 记录历史并支持 #服务器状态趋势
+  raw_hours: 6        # 原始点保留小时数（30s 一个点）
+  hourly_days: 7      # 小时聚合保留天数
+  daily_days: 90      # 天聚合保留天数
 render:
   imgType: png

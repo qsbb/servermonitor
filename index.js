@@ -18,6 +18,7 @@ import {
   listPendingTokens,
   scanOffline as scanOfflineModel,
   scanAlerts as scanAlertsModel,
+  getTrend,
   persist as persistModel,
   buildAddServerReply,
   buildServerCommand,
@@ -104,6 +105,7 @@ export class servermonitor extends plugin {
         { reg: "^#?服务器状态命令$", fnc: "usage", permission: "master", log: false },
         { reg: "^#?服务器状态删除$", fnc: "usage", permission: "master", log: false },
         { reg: "^#?服务器状态\\s*pro$", fnc: "statusPro", log: false },
+        { reg: "^#?服务器状态趋势\\s+(\\S{1,32})(?:\\s+(24h|7d|30d))?$", fnc: "trend", log: false },
         { reg: "^#?服务器状态\\s+(\\S{1,32})$", fnc: "statusOne", log: false },
         { reg: "^#?服务器状态$", fnc: "statusAll", log: false },
       ],
@@ -226,6 +228,51 @@ export class servermonitor extends plugin {
     return this.reply(seg)
   }
 
+  async trend() {
+    if (!(await this._canViewStatus())) return this._replyNoPermission()
+    const config = await loadConfig()
+    if (!this._viewCooldownOk(config)) {
+      return this.reply(`查看太频繁，请 ${Math.max(0, Number(config.status_cooldown ?? 10))} 秒后再试`)
+    }
+    const text = getMessageText(this.e)
+    const args = parseCommandArg(text, /^#?服务器状态趋势\s+(\S{1,32})(?:\s+(24h|7d|30d))?$/)
+    const name = args?.[0]?.trim()
+    const range = args?.[1] || "24h"
+    if (!name) return false
+
+    const data = await getTrend(name, range)
+    if (!data) return this.reply(`未找到服务器：${name}`)
+    if (!data.enabled) return this.reply("历史数据未启用：请在 config.yaml 中设置 history.enabled: true")
+    if (data.empty) {
+      return this.reply([
+        `服务器【${data.name}】暂无历史数据`,
+        `插件每 30 秒记录一次，运行一段时间后再试：#服务器状态趋势 ${data.name} ${range}`,
+      ].join("\n"))
+    }
+
+    let seg = null
+    try {
+      if (this.e?.runtime?.render) {
+        seg = await this.e.runtime.render(PLUGIN_NAME, "server_trend", data, {
+          retType: "base64",
+          imgType: config.render?.imgType || "png",
+          saveId: `servermonitor_trend_${data.range}`,
+        })
+      }
+    } catch (err) {
+      ;(globalThis.logger || console).warn("[servermonitor] render trend failed", err)
+    }
+    if (!seg) {
+      const lines = [`服务器【${data.name}】趋势 · ${data.rangeLabel}`, data.summary || "暂无汇总"]
+      for (const chart of data.charts || []) {
+        const parts = (chart.lines || []).map(line => `${line.label} ${line.last ?? "—"}${chart.unit === "%" ? "%" : ` ${chart.unit}`}`)
+        lines.push(`${chart.title}：${parts.join(" · ")}`)
+      }
+      return this.reply(lines.join("\n"))
+    }
+    return this.reply(seg)
+  }
+
   async list() {
     if (!(await this._canViewStatus())) return this._replyNoPermission()
     return this.reply(await listServersText())
@@ -256,6 +303,7 @@ export class servermonitor extends plugin {
       `#服务器状态检查        查看插件加载和配置`,
       `#服务器状态添加 <名称> [上报地址] [备注]  主人私聊添加（地址需带 http://）`,
       `#服务器状态命令 <名称>  主人私聊重新获取 token 与启动命令`,
+      `#服务器状态趋势 <名称> [24h|7d|30d]  查看历史趋势图`,
       `#服务器状态绑定 <token> 或 <名称> <token>  主人私聊绑定`,
       `#服务器状态待绑定      主人私聊查看待绑定 token`,
       `#服务器状态改名 <旧名> <新名>  主人私聊修改名称`,

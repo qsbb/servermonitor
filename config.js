@@ -10,6 +10,7 @@ export const CONFIG_FILE = path.join(ROOT_DIR, "config.yaml")
 export const DATA_DIR = path.join(ROOT_DIR, "data")
 export const SNAPSHOT_FILE = path.join(DATA_DIR, "snapshots.json")
 export const PENDING_FILE = path.join(DATA_DIR, "pending.json")
+export const HISTORY_FILE = path.join(DATA_DIR, "history.json")
 
 const DEFAULT_CONFIG = {
   admins: [],
@@ -30,6 +31,12 @@ const DEFAULT_CONFIG = {
     cooldown: 120,
     quiet_hours: "",
     rules: [],
+  },
+  history: {
+    enabled: true,
+    raw_hours: 6,
+    hourly_days: 7,
+    daily_days: 90,
   },
   render: {
     imgType: "png",
@@ -167,6 +174,11 @@ function parseConfigText(raw) {
         section = "render"
         continue
       }
+      if (line === "history:") {
+        parsed.history = parsed.history || {}
+        section = "history"
+        continue
+      }
       const pair = parseKeyValue(line)
       if (pair) parsed[pair[0]] = pair[1]
       section = null
@@ -232,7 +244,7 @@ function parseConfigText(raw) {
       continue
     }
 
-    if (section === "render") {
+    if (section === "render" || section === "history") {
       const pair = parseKeyValue(line)
       if (pair) parsed[section][pair[0]] = pair[1]
     }
@@ -297,6 +309,11 @@ function stringifyConfig(config) {
   } else {
     lines.push("  rules: []")
   }
+  lines.push("history:")
+  lines.push(`  enabled: ${data.history.enabled}`)
+  lines.push(`  raw_hours: ${data.history.raw_hours}`)
+  lines.push(`  hourly_days: ${data.history.hourly_days}`)
+  lines.push(`  daily_days: ${data.history.daily_days}`)
   lines.push("render:")
   lines.push(`  imgType: ${yamlString(data.render.imgType)}`)
   return `${lines.join("\n")}\n`
@@ -358,6 +375,14 @@ export function normalizeConfig(input = {}) {
     cooldown: Math.max(30, toInt(alert.cooldown, base.alert.cooldown)),
     quiet_hours: String(alert.quiet_hours || "").trim(),
     rules: normalizeAlertRules(alert.rules),
+  }
+
+  const history = config.history && typeof config.history === "object" ? config.history : {}
+  base.history = {
+    enabled: toBool(history.enabled, base.history.enabled),
+    raw_hours: Math.max(1, Math.min(72, toInt(history.raw_hours, base.history.raw_hours))),
+    hourly_days: Math.max(1, Math.min(90, toInt(history.hourly_days, base.history.hourly_days))),
+    daily_days: Math.max(1, Math.min(365, toInt(history.daily_days, base.history.daily_days))),
   }
 
   const render = config.render && typeof config.render === "object" ? config.render : {}

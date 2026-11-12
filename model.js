@@ -3,8 +3,9 @@ import os from "node:os"
 import path from "node:path"
 import crypto from "node:crypto"
 import { collectLocalSnapshot } from "./local.js"
-import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
+import { DATA_DIR, SNAPSHOT_FILE, PENDING_FILE, HISTORY_FILE, loadConfig, updateConfig, makeToken, ensureConfigExists } from "./config.js"
 import { ALERT_METRIC_LABELS, evaluateAlertRules, inQuietHours, parseQuietHours, pruneAlertStates } from "./alert.js"
+import { HISTORY_VERSION, buildTrendData, createHistorySeries, fitHistoryToBudget, ingestPoint, pruneHistoryServers } from "./history.js"
 
 const STATE_KEY = "__servermonitor_state__"
 const state = globalThis[STATE_KEY] ??= {
@@ -14,6 +15,7 @@ const state = globalThis[STATE_KEY] ??= {
   records: new Map(),
   pendingReports: new Map(),
   alertStates: new Map(),
+  history: null,
   bootstrapPromise: null,
   persistedLoaded: false,
   lastPersistAt: 0,
@@ -267,6 +269,29 @@ async function hydratePersisted() {
   } catch {}
 }
 
+async function hydrateHistory() {
+  try {
+    const raw = await fs.readFile(HISTORY_FILE, "utf8")
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && parsed.series && typeof parsed.series === "object") {
+      state.history = {
+        v: HISTORY_VERSION,
+        savedAt: Number(parsed.savedAt) || 0,
+        series: parsed.series,
+      }
+      return
+    }
+  } catch (err) {
+    // 文件损坏时备份后从空历史开始，不阻塞插件启动
+    if (err?.code !== "ENOENT") {
+      const backup = `${HISTORY_FILE}.corrupt-${Date.now()}`
+      await fs.copyFile(HISTORY_FILE, backup).catch(() => {})
+      ;(globalThis.logger || console).warn(`[servermonitor] history.json 解析失败，已备份到 ${backup}`)
+    }
+  }
+  state.history = state.history || { v: HISTORY_VERSION, savedAt: 0, series: {} }
+}
+
 async function hydratePending() {
   const maxAgeMs = 24 * 60 * 60 * 1000
   const maxEntries = 100
@@ -355,6 +380,7 @@ async function bootstrap() {
     state.bootstrapPromise = (async () => {
       await hydratePersisted()
       await hydratePending()
+      await hydrateHistory()
       await hydrateConfig()
     })().catch(err => {
       state.bootstrapPromise = null
@@ -1236,6 +1262,10 @@ export async function renameServer(oldName, newName) {
     state.alertStates.delete(cleanOld)
     state.alertStates.set(cleanNew, alertStates)
   }
+  if (state.history?.series?.[cleanOld]) {
+    state.history.series[cleanNew] = state.history.series[cleanOld]
+    delete state.history.series[cleanOld]
+  }
   await refreshConfig()
   return config.servers.find(item => item.name === cleanNew)
 }
@@ -1252,6 +1282,7 @@ export async function removeServer(name) {
   })
   state.records.delete(cleanName)
   state.alertStates.delete(cleanName)
+  if (state.history?.series) delete state.history.series[cleanName]
   await refreshConfig()
   return config
 }
@@ -1412,6 +1443,70 @@ function formatAlertEvent(event) {
   return `⚠️ 服务器【${event.serverName}】${label} ${formatAlertValue(rule.metric, event.value)}，达到阈值 ${rule.threshold}${unit}${hold}${resumed}`
 }
 
+// --- 历史数据 -----------------------------------------------------------
+function buildHistoryPoint(snap, now = Date.now()) {
+  if (!snap) return null
+  const memory = resolveMemoryUsage(snap.mem)
+  const gpus = Array.isArray(snap.gpus) ? snap.gpus : []
+  const gpuPct = gpus.reduce((max, gpu) => {
+    const value = clampPercent(gpu?.usage)
+    return value !== null && value > max ? value : max
+  }, -1)
+  return {
+    t: now,
+    c: clampPercent(snap.cpu?.usage),
+    m: computeUsagePercent(memory.effectiveUsed, memory.total),
+    rx: clampNonNegative(snap.net?.rxSec, 1024 * 1024),
+    tx: clampNonNegative(snap.net?.txSec, 1024 * 1024),
+    g: gpuPct >= 0 ? gpuPct : null,
+  }
+}
+
+// 采样当前在线服务器，滚动聚合到小时/天桶，并做容量裁剪。复用 30s 落盘 tick。
+async function recordHistory(now = Date.now()) {
+  const config = await refreshConfig()
+  if (!config.history?.enabled) return null
+  if (!state.history || typeof state.history !== "object") {
+    state.history = { v: HISTORY_VERSION, savedAt: 0, series: {} }
+  }
+  const limits = {
+    rawHours: config.history.raw_hours,
+    hourlyDays: config.history.hourly_days,
+    dailyDays: config.history.daily_days,
+  }
+  const keepNames = config.servers.map(conf => conf.name)
+  state.history = pruneHistoryServers(state.history, keepNames)
+  for (const conf of config.servers) {
+    const record = state.records.get(conf.name)
+    if (!record?.snap || record.state === "offline") continue
+    const point = buildHistoryPoint(record.snap, now)
+    if (!point) continue
+    const series = state.history.series[conf.name] || createHistorySeries()
+    state.history.series[conf.name] = ingestPoint(series, point, now, limits)
+  }
+  state.history = fitHistoryToBudget({ ...state.history, savedAt: now })
+  return state.history
+}
+
+// 趋势数据：返回 { enabled, empty, charts:[...], name, rangeLabel, summary }。
+export async function getTrend(serverName, range = "24h") {
+  await bootstrap()
+  const config = await refreshConfig()
+  const conf = resolveConfigServer(serverName)
+  if (!conf) return null
+  const safeRange = ["24h", "7d", "30d"].includes(range) ? range : "24h"
+  const historyEnabled = config.history?.enabled !== false
+  const series = state.history?.series?.[conf.name] || createHistorySeries()
+  const data = buildTrendData({ name: conf.name, series, range: safeRange, now: Date.now() })
+  return {
+    ...data,
+    enabled: historyEnabled,
+    rawHours: config.history?.raw_hours ?? 6,
+    range: safeRange,
+    updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+  }
+}
+
 // 阈值告警评估：每 10s tick 调一次，所有服务器的触发/恢复合并成一条消息。
 // 静默时段内只推进状态不发送；静默结束后补发一次（suppressed）。
 export async function scanAlerts(now = Date.now()) {
@@ -1540,6 +1635,10 @@ export async function persist() {
     }
     await atomicWriteJson(SNAPSHOT_FILE, payload)
     state.lastPersistAt = Date.now()
+    if (config.history?.enabled) {
+      const history = await recordHistory(Date.now())
+      if (history) await atomicWriteJson(HISTORY_FILE, history)
+    }
     return payload
   } catch (err) {
     ;(globalThis.logger || console).warn("[servermonitor] persist failed", err)

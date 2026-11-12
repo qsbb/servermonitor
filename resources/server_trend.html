@@ -1,0 +1,44 @@
+<link rel="stylesheet" href="{{pluResPath}}status.css">
+<div id="container" class="{{typeof theme !== 'undefined' && theme === 'light' ? 'theme-light' : ''}}">
+  <div class="sb-topbar">
+    <div class="sb-topbar-main">
+      <div class="sb-overline">SERVER MONITOR</div>
+      <div class="sb-title">{{name}} · 趋势 {{rangeLabel}}</div>
+      {{if summary}}<div class="sb-summary">{{summary}}</div>{{/if}}
+    </div>
+    <div class="sb-pagechip">历史</div>
+  </div>
+
+  <div class="tr-charts">
+    {{each charts c}}
+    <div class="tr-chart">
+      <div class="tr-chart-head">
+        <span class="sb-label">{{c.title}}</span>
+        <span class="tr-unit">{{c.unit}}</span>
+      </div>
+      <svg viewBox="0 0 {{c.width}} {{c.height}}" class="tr-svg" preserveAspectRatio="none">
+        {{each c.yTicks t}}
+        <line x1="8" y1="{{t.y}}" x2="{{c.width - 8}}" y2="{{t.y}}" class="tr-grid"></line>
+        <text x="10" y="{{t.y - 3}}" class="tr-axis">{{t.label}}</text>
+        {{/each}}
+        {{each c.lines l}}
+        <path d="{{l.path}}" class="tr-line{{if l.dashed}} tr-line-dash{{/if}}" style="stroke: {{l.color}};"></path>
+        {{/each}}
+      </svg>
+      <div class="tr-legend">
+        {{each c.lines l}}
+        <span class="tr-legend-item"><i style="background: {{l.color}};"></i>{{l.label}}{{if l.last != null}} {{l.last}}{{if c.unit === '%'}}%{{/if}}{{/if}}</span>
+        {{/each}}
+      </div>
+    </div>
+    {{/each}}
+  </div>
+
+  <div class="tr-xaxis">
+    {{each xTicks t}}
+    <span class="tr-xtick" style="left: {{(t.x / width * 100).toFixed(1)}}%;">{{t.label}}</span>
+    {{/each}}
+  </div>
+
+  <div class="sb-footer">更新于 {{updatedAt || '—'}}</div>
+</div>
