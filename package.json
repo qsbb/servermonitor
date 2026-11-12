@@ -1,6 +1,6 @@
 {
   "name": "servermonitor-yunzai-plugin",
-  "version": "0.1.21",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
   "scripts": {
